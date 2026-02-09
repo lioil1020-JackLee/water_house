@@ -1,0 +1,50 @@
+/* Stylesheet for SCADA and popup dialogs */
+
+QMainWindow {
+    background: #f4f4f4;
+}
+
+QWidget#scadaCentral {
+    background: #f4f4f4;
+}
+
+QPushButton#panicButton {
+    background: #ffffff;
+    border: 1px solid #cccccc;
+    border-radius: 6px;
+    color: #111111;
+    padding: 6px 12px;
+}
+
+QPushButton#panicButton:hover {
+    background: #fafafa;
+}
+
+QLabel#statusLabel {
+    color: #163b38;
+}
+
+QDialog {
+    background: #ffffff;
+    border-radius: 6px;
+}
+
+QLabel#popupMessage {
+    color: #163b38;
+}
+
+QPushButton#popupOk {
+    background: #ffffff;
+    border: 1px solid #7aa6a1;
+    border-radius: 4px;
+    font-family: "Times New Roman";
+    font-size: 16px;
+}
+
+QPushButton#popupCancel {
+    background: #ffffff;
+    border: 1px solid #cccccc;
+    border-radius: 4px;
+    font-family: "Times New Roman";
+    font-size: 16px;
+}

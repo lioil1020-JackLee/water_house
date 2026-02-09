@@ -1,0 +1,149 @@
+﻿TagName,OPC UA NodeId,Data Type,AccessLevel
+1F 公共澡堂壓扣1234 警報開關,ns=2;s=Delta_42_1F.HPW1.EN1,Boolean,"CurrentRead, CurrentWrite"
+1F 殘障廁所壓扣12 警報開關,ns=2;s=Delta_42_1F.HPW1.EN2,Boolean,"CurrentRead, CurrentWrite"
+1F 公共澡堂壓扣1234 警報復歸,ns=2;s=Delta_42_1F.HPW1.ALM_RST1,Boolean,"CurrentRead, CurrentWrite"
+1F 殘障廁所壓扣12 警報復歸,ns=2;s=Delta_42_1F.HPW1.ALM_RST2,Boolean,"CurrentRead, CurrentWrite"
+1F 公共澡堂壓扣1234 警報狀態,ns=2;s=Delta_42_1F.HPW1.ALM1,Boolean,CurrentRead
+1F 殘障廁所壓扣12 警報狀態,ns=2;s=Delta_42_1F.HPW1.ALM2,Boolean,CurrentRead
+1F 公共澡堂壓扣1234 警報延遲,ns=2;s=Delta_42_1F.HPW1.DT1,Float,"CurrentRead, CurrentWrite"
+1F 殘障廁所壓扣12 警報延遲,ns=2;s=Delta_42_1F.HPW1.DT2,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣201 警報開關,ns=2;s=Delta_43_2F.BA04.EN1,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣202 警報開關,ns=2;s=Delta_43_2F.BA04.EN2,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣203 警報開關,ns=2;s=Delta_43_2F.BA04.EN3,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣205 警報開關,ns=2;s=Delta_43_2F.BA04.EN4,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣206 警報開關,ns=2;s=Delta_43_2F.BA04.EN5,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣207 警報開關,ns=2;s=Delta_43_2F.BA04.EN6,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣208 警報開關,ns=2;s=Delta_43_2F.BA04.EN7,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣209 警報開關,ns=2;s=Delta_43_2F.BA04.EN8,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣210 警報開關,ns=2;s=Delta_43_2F.BA04.EN9,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣211 警報開關,ns=2;s=Delta_43_2F.BA04.EN10,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣212 警報開關,ns=2;s=Delta_43_2F.BA04.EN11,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣213 警報開關,ns=2;s=Delta_43_2F.BA04.EN12,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣201 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST1,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣202 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST2,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣203 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST3,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣205 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST4,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣206 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST5,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣207 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST6,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣208 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST7,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣209 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST8,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣210 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST9,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣211 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST10,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣212 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST11,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣213 警報復歸,ns=2;s=Delta_43_2F.BA04.ALM_RST12,Boolean,"CurrentRead, CurrentWrite"
+2F 客房壓扣201 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM1,Boolean,CurrentRead
+2F 客房壓扣202 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM2,Boolean,CurrentRead
+2F 客房壓扣203 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM3,Boolean,CurrentRead
+2F 客房壓扣205 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM4,Boolean,CurrentRead
+2F 客房壓扣206 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM5,Boolean,CurrentRead
+2F 客房壓扣207 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM6,Boolean,CurrentRead
+2F 客房壓扣208 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM7,Boolean,CurrentRead
+2F 客房壓扣209 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM8,Boolean,CurrentRead
+2F 客房壓扣210 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM9,Boolean,CurrentRead
+2F 客房壓扣211 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM10,Boolean,CurrentRead
+2F 客房壓扣212 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM11,Boolean,CurrentRead
+2F 客房壓扣213 警報狀態,ns=2;s=Delta_43_2F.BA04.ALM12,Boolean,CurrentRead
+2F 客房壓扣201 警報延遲,ns=2;s=Delta_43_2F.BA04.DT1,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣202 警報延遲,ns=2;s=Delta_43_2F.BA04.DT2,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣203 警報延遲,ns=2;s=Delta_43_2F.BA04.DT3,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣205 警報延遲,ns=2;s=Delta_43_2F.BA04.DT4,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣206 警報延遲,ns=2;s=Delta_43_2F.BA04.DT5,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣207 警報延遲,ns=2;s=Delta_43_2F.BA04.DT6,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣208 警報延遲,ns=2;s=Delta_43_2F.BA04.DT7,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣209 警報延遲,ns=2;s=Delta_43_2F.BA04.DT8,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣210 警報延遲,ns=2;s=Delta_43_2F.BA04.DT9,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣211 警報延遲,ns=2;s=Delta_43_2F.BA04.DT10,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣212 警報延遲,ns=2;s=Delta_43_2F.BA04.DT11,Float,"CurrentRead, CurrentWrite"
+2F 客房壓扣213 警報延遲,ns=2;s=Delta_43_2F.BA04.DT12,Float,"CurrentRead, CurrentWrite"
+3F 客房壓扣301 警報開關,ns=2;s=Delta_44_3F.BA05.EN1,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣302 警報開關,ns=2;s=Delta_44_3F.BA05.EN2,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣303 警報開關,ns=2;s=Delta_44_3F.BA05.EN3,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣305 警報開關,ns=2;s=Delta_44_3F.BA05.EN4,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣306 警報開關,ns=2;s=Delta_44_3F.BA05.EN5,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣307 警報開關,ns=2;s=Delta_44_3F.BA05.EN6,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣308 警報開關,ns=2;s=Delta_44_3F.BA05.EN7,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣309 警報開關,ns=2;s=Delta_44_3F.BA05.EN8,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣310 警報開關,ns=2;s=Delta_44_3F.BA05.EN9,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣312 警報開關,ns=2;s=Delta_44_3F.BA05.EN10,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣313 警報開關,ns=2;s=Delta_44_3F.BA05.EN11,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣301 警報復歸,ns=2;s=Delta_44_3F.BA05.ALM_RST1,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣302 警報復歸,ns=2;s=Delta_44_3F.BA05.ALM_RST2,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣303 警報復歸,ns=2;s=Delta_44_3F.BA05.ALM_RST3,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣305 警報復歸,ns=2;s=Delta_44_3F.BA05.ALM_RST4,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣306 警報復歸,ns=2;s=Delta_44_3F.BA05.ALM_RST5,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣307 警報復歸,ns=2;s=Delta_44_3F.BA05.ALM_RST6,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣308 警報復歸,ns=2;s=Delta_44_3F.BA05.ALM_RST7,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣309 警報復歸,ns=2;s=Delta_44_3F.BA05.ALM_RST8,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣310 警報復歸,ns=2;s=Delta_44_3F.BA05.ALM_RST9,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣312 警報復歸,ns=2;s=Delta_44_3F.BA05.ALM_RST10,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣313 警報復歸,ns=2;s=Delta_44_3F.BA05.ALM_RST11,Boolean,"CurrentRead, CurrentWrite"
+3F 客房壓扣301 警報狀態,ns=2;s=Delta_44_3F.BA05.ALM1,Boolean,CurrentRead
+3F 客房壓扣302 警報狀態,ns=2;s=Delta_44_3F.BA05.ALM2,Boolean,CurrentRead
+3F 客房壓扣303 警報狀態,ns=2;s=Delta_44_3F.BA05.ALM3,Boolean,CurrentRead
+3F 客房壓扣305 警報狀態,ns=2;s=Delta_44_3F.BA05.ALM4,Boolean,CurrentRead
+3F 客房壓扣306 警報狀態,ns=2;s=Delta_44_3F.BA05.ALM5,Boolean,CurrentRead
+3F 客房壓扣307 警報狀態,ns=2;s=Delta_44_3F.BA05.ALM6,Boolean,CurrentRead
+3F 客房壓扣308 警報狀態,ns=2;s=Delta_44_3F.BA05.ALM7,Boolean,CurrentRead
+3F 客房壓扣309 警報狀態,ns=2;s=Delta_44_3F.BA05.ALM8,Boolean,CurrentRead
+3F 客房壓扣310 警報狀態,ns=2;s=Delta_44_3F.BA05.ALM9,Boolean,CurrentRead
+3F 客房壓扣312 警報狀態,ns=2;s=Delta_44_3F.BA05.ALM10,Boolean,CurrentRead
+3F 客房壓扣313 警報狀態,ns=2;s=Delta_44_3F.BA05.ALM11,Boolean,CurrentRead
+3F 客房壓扣301 警報延遲,ns=2;s=Delta_44_3F.BA05.DT1,Float,"CurrentRead, CurrentWrite"
+3F 客房壓扣302 警報延遲,ns=2;s=Delta_44_3F.BA05.DT2,Float,"CurrentRead, CurrentWrite"
+3F 客房壓扣303 警報延遲,ns=2;s=Delta_44_3F.BA05.DT3,Float,"CurrentRead, CurrentWrite"
+3F 客房壓扣305 警報延遲,ns=2;s=Delta_44_3F.BA05.DT4,Float,"CurrentRead, CurrentWrite"
+3F 客房壓扣306 警報延遲,ns=2;s=Delta_44_3F.BA05.DT5,Float,"CurrentRead, CurrentWrite"
+3F 客房壓扣307 警報延遲,ns=2;s=Delta_44_3F.BA05.DT6,Float,"CurrentRead, CurrentWrite"
+3F 客房壓扣308 警報延遲,ns=2;s=Delta_44_3F.BA05.DT7,Float,"CurrentRead, CurrentWrite"
+3F 客房壓扣309 警報延遲,ns=2;s=Delta_44_3F.BA05.DT8,Float,"CurrentRead, CurrentWrite"
+3F 客房壓扣310 警報延遲,ns=2;s=Delta_44_3F.BA05.DT9,Float,"CurrentRead, CurrentWrite"
+3F 客房壓扣312 警報延遲,ns=2;s=Delta_44_3F.BA05.DT10,Float,"CurrentRead, CurrentWrite"
+3F 客房壓扣313 警報延遲,ns=2;s=Delta_44_3F.BA05.DT11,Float,"CurrentRead, CurrentWrite"
+5F 客房壓扣501 警報開關,ns=2;s=Delta_45_5F.BA06.EN1,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣502 警報開關,ns=2;s=Delta_45_5F.BA06.EN2,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣503 警報開關,ns=2;s=Delta_45_5F.BA06.EN3,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣505 警報開關,ns=2;s=Delta_45_5F.BA06.EN4,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣506 警報開關,ns=2;s=Delta_45_5F.BA06.EN5,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣507 警報開關,ns=2;s=Delta_45_5F.BA06.EN6,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣508 警報開關,ns=2;s=Delta_45_5F.BA06.EN7,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣509 警報開關,ns=2;s=Delta_45_5F.BA06.EN8,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣512 警報開關,ns=2;s=Delta_45_5F.BA06.EN9,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣513 警報開關,ns=2;s=Delta_45_5F.BA06.EN10,Boolean,"CurrentRead, CurrentWrite"
+5F 公共澡堂壓扣12 警報開關,ns=2;s=Delta_45_5F.BA06.EN11,Boolean,"CurrentRead, CurrentWrite"
+5F 殘障廁所壓扣12 警報開關,ns=2;s=Delta_45_5F.BA06.EN12,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣501 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST1,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣502 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST2,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣503 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST3,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣505 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST4,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣506 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST5,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣507 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST6,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣508 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST7,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣509 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST8,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣512 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST9,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣513 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST10,Boolean,"CurrentRead, CurrentWrite"
+5F 公共澡堂壓扣12 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST11,Boolean,"CurrentRead, CurrentWrite"
+5F 殘障廁所壓扣12 警報復歸,ns=2;s=Delta_45_5F.BA06.ALM_RST12,Boolean,"CurrentRead, CurrentWrite"
+5F 客房壓扣501 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM1,Boolean,CurrentRead
+5F 客房壓扣502 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM2,Boolean,CurrentRead
+5F 客房壓扣503 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM3,Boolean,CurrentRead
+5F 客房壓扣505 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM4,Boolean,CurrentRead
+5F 客房壓扣506 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM5,Boolean,CurrentRead
+5F 客房壓扣507 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM6,Boolean,CurrentRead
+5F 客房壓扣508 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM7,Boolean,CurrentRead
+5F 客房壓扣509 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM8,Boolean,CurrentRead
+5F 客房壓扣512 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM9,Boolean,CurrentRead
+5F 客房壓扣513 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM10,Boolean,CurrentRead
+5F 公共澡堂壓扣12 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM11,Boolean,CurrentRead
+5F 殘障廁所壓扣12 警報狀態,ns=2;s=Delta_45_5F.BA06.ALM12,Boolean,CurrentRead
+5F 客房壓扣501 警報延遲,ns=2;s=Delta_45_5F.BA06.DT1,Float,"CurrentRead, CurrentWrite"
+5F 客房壓扣502 警報延遲,ns=2;s=Delta_45_5F.BA06.DT2,Float,"CurrentRead, CurrentWrite"
+5F 客房壓扣503 警報延遲,ns=2;s=Delta_45_5F.BA06.DT3,Float,"CurrentRead, CurrentWrite"
+5F 客房壓扣505 警報延遲,ns=2;s=Delta_45_5F.BA06.DT4,Float,"CurrentRead, CurrentWrite"
+5F 客房壓扣506 警報延遲,ns=2;s=Delta_45_5F.BA06.DT5,Float,"CurrentRead, CurrentWrite"
+5F 客房壓扣507 警報延遲,ns=2;s=Delta_45_5F.BA06.DT6,Float,"CurrentRead, CurrentWrite"
+5F 客房壓扣508 警報延遲,ns=2;s=Delta_45_5F.BA06.DT7,Float,"CurrentRead, CurrentWrite"
+5F 客房壓扣509 警報延遲,ns=2;s=Delta_45_5F.BA06.DT8,Float,"CurrentRead, CurrentWrite"
+5F 客房壓扣512 警報延遲,ns=2;s=Delta_45_5F.BA06.DT9,Float,"CurrentRead, CurrentWrite"
+5F 客房壓扣513 警報延遲,ns=2;s=Delta_45_5F.BA06.DT10,Float,"CurrentRead, CurrentWrite"
+5F 公共澡堂壓扣12 警報延遲,ns=2;s=Delta_45_5F.BA06.DT11,Float,"CurrentRead, CurrentWrite"
+5F 殘障廁所壓扣12 警報延遲,ns=2;s=Delta_45_5F.BA06.DT12,Float,"CurrentRead, CurrentWrite"
