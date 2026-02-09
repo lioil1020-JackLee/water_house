@@ -1,12 +1,12 @@
 import os
 import importlib.util
 from pathlib import Path
-from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QScrollArea, QDialog, QApplication, QSizePolicy
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
+    QDialog, QApplication
 )
-from PyQt5.QtGui import QPixmap, QFont, QPalette, QColor
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPoint, QRect
+from PyQt6.QtGui import QPixmap, QFont, QColor, QScreen
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize, QEvent
 
 
 def _load_popup_class():
@@ -30,182 +30,195 @@ def _load_popup_class():
 PopupDialog = _load_popup_class()
 
 
-# Hardcoded room data
+# 房間數據（None 表示空位）
 ROOMS_DATA = {
     '5F': {
-        'top_row': [(508, '客房\n壓扣'), (509, '客房\n壓扣'), (512, '客房\n壓扣'), (513, '客房\n壓扣')],
-        'customer': [
-            (501, '客房\n壓扣'), (502, '客房\n壓扣'), (503, '客房\n壓扣'), (505, '客房\n壓扣'),
-            (506, '客房\n壓扣'), (507, '客房\n壓扣')
-        ],
-        'public': [
-            (1, '公共澡堂\n壓扣x2'), (2, '殘障廁所\n壓扣x2')
-        ]
+        'row1': [(508, '客房\n壓扣'), (509, '客房\n壓扣'), None, None, (512, '客房\n壓扣'), (513, '客房\n壓扣')],
+        'row2': [(501, '客房\n壓扣'), (502, '客房\n壓扣'), (503, '客房\n壓扣'), (505, '客房\n壓扣'),
+                 (506, '客房\n壓扣'), (507, '客房\n壓扣')],
+        'public': [(1, '公共澡堂\n壓扣x2'), (2, '殘障廁所\n壓扣x2')]
     },
     '3F': {
-        'customer': [
-            (308, '客房\n壓扣'), (309, '客房\n壓扣'), (310, '客房\n壓扣'), (311, '客房\n壓扣'),
-            (312, '客房\n壓扣')
-        ],
-        'customer2': [
-            (301, '客房\n壓扣'), (302, '客房\n壓扣'), (303, '客房\n壓扣'), (305, '客房\n壓扣'),
-            (306, '客房\n壓扣'), (307, '客房\n壓扣')
-        ]
+        'row1': [(308, '客房\n壓扣'), (309, '客房\n壓扣'), (310, '客房\n壓扣'), None, (312, '客房\n壓扣'),
+                 (313, '客房\n壓扣')],
+        'row2': [(301, '客房\n壓扣'), (302, '客房\n壓扣'), (303, '客房\n壓扣'), (305, '客房\n壓扣'),
+                 (306, '客房\n壓扣'), (307, '客房\n壓扣')]
     },
     '2F': {
-        'customer': [
-            (208, '客房\n壓扣'), (209, '客房\n壓扣'), (210, '客房\n壓扣'), (211, '客房\n壓扣'),
-            (212, '客房\n壓扣'), (213, '客房\n壓扣')
-        ],
-        'customer2': [
-            (201, '客房\n壓扣'), (202, '客房\n壓扣'), (203, '客房\n壓扣'), (204, '客房\n壓扣'),
-            (205, '客房\n壓扣'), (206, '客房\n壓扣')
-        ],
-        'public': [
-            (1, '公共澡堂\n壓扣x4'), (2, '殘障廁所\n壓扣x2')
-        ]
+        'row1': [(208, '客房\n壓扣'), (209, '客房\n壓扣'), (210, '客房\n壓扣'), (211, '客房\n壓扣'),
+                 (212, '客房\n壓扣'), (213, '客房\n壓扣')],
+        'row2': [(201, '客房\n壓扣'), (202, '客房\n壓扣'), (203, '客房\n壓扣'), (204, '客房\n壓扣'),
+                 (205, '客房\n壓扣'), (206, '客房\n壓扣')],
+        'public': [(1, '公共澡堂\n壓扣x4'), (2, '殘障廁所\n壓扣x2')]
     }
 }
 
-# Vertical spacing between floors (pixels)
-FLOOR_SPACING = 40
 
-
-class IndicatorWidget(QWidget):
-    """Single room indicator card with indicator inside card."""
-    state_changed = pyqtSignal(str)
+class ClickableLabel(QLabel):
+    """可點擊的標籤。"""
+    clicked = pyqtSignal()
     
-    def __init__(self, room_id, room_type, img_dir, parent=None):
-        super().__init__(parent)
+    def mousePressEvent(self, event):
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class RoomCard(QWidget):
+    """房間卡片 - 正方形，房號+壓扣在上，綠燈在下。"""
+    clicked = pyqtSignal()
+    
+    def __init__(self, room_id, room_type, img_dir, is_public=False, floor: str = None):
+        super().__init__()
         self.room_id = room_id
         self.room_type = room_type
+        self.is_public = is_public
+        self.floor = floor
         self.img_dir = img_dir
         self.state = 'normal'
         self.blink_state = False
         
-        self.setMinimumSize(160, 160)
-        self.setMaximumSize(160, 160)
+        self.setFixedSize(90, 90)
+        
+        # 設定 objectName 以便在樣式表中限定只有此元件有邊框
+        self.setObjectName('RoomCard')
+        
+        # 啟用背景繪製（必須設定才能讓 QWidget 顯示背景）
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
+        
+        # 偵測淺色/深色模式並設定卡片樣式
+        self._update_card_style()
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(0)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(1)
         
-        # Card container with border and background
-        card_widget = QWidget()
-        card_layout = QVBoxLayout(card_widget)
-        # reduce bottom margin so indicator can sit nearer card bottom
-        card_layout.setContentsMargins(10, 12, 10, 6)
-        card_layout.setSpacing(6)
-
-        # allow the card to expand to fill the IndicatorWidget area
-        card_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # 房號
+        first_line = room_type.splitlines()[0] if room_type else ''
+        if is_public:
+            room_text = first_line
+        else:
+            room_text = f"{room_id}{first_line}"
         
-        card_widget.setStyleSheet('''
-            QWidget {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                    stop:0 #6b4f2a, stop:1 #8a6b3a);
-                border-radius: 5px;
-                border: 2px solid #5a3f1a;
-            }
-        ''')
+        self.room_label = QLabel(room_text)
+        self.room_label.setFont(QFont('微軟正黑體', 11, QFont.Weight.Bold))
+        # 使用應用程式 palette 而非硬編碼色碼，讓文字能響應系統主題
+        self.room_label.setStyleSheet('QLabel { background: transparent; border: none; }')
+        app = QApplication.instance()
+        if app:
+            self.room_label.setPalette(app.palette())
+        self.room_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.room_label)
         
-        # Room number (blue)
-        self.button_label = QLabel(str(room_id))
-        self.button_label.setFont(QFont('Arial', 12, QFont.Bold))
-        self.button_label.setStyleSheet('color: #1e6bd6; background: transparent; border: none;')
-        self.button_label.setAlignment(Qt.AlignCenter)
-        card_layout.addWidget(self.button_label)
+        # 壓扣
+        pressure_line = room_type.splitlines()[1] if len(room_type.splitlines()) > 1 else ''
+        self.pressure_label = QLabel(pressure_line)
+        self.pressure_label.setFont(QFont('微軟正黑體', 8, QFont.Weight.Bold))
+        # 使用應用程式 palette 而非硬編碼色碼
+        self.pressure_label.setStyleSheet('QLabel { background: transparent; border: none; }')
+        if app:
+            self.pressure_label.setPalette(app.palette())
+        self.pressure_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pressure_label.setWordWrap(True)
+        layout.addWidget(self.pressure_label)
         
-        # Room type (purple)
-        self.type_label = QLabel(room_type)
-        self.type_label.setFont(QFont('Arial', 10, QFont.Bold))
-        self.type_label.setStyleSheet('color: #d64dd6; background: transparent; border: none;')
-        self.type_label.setAlignment(Qt.AlignCenter)
-        self.type_label.setWordWrap(True)
-        card_layout.addWidget(self.type_label)
-
-        # push indicator toward bottom by adding stretch above it
-        card_layout.addStretch(1)
+        # 彈簧
+        layout.addStretch(1)
         
-        # Indicator light inside card
-        self.indicator_label = QLabel()
-        # increase default indicator size so it appears larger before first resize
-        self.indicator_label.setFixedSize(80, 80)
-        self.indicator_label.setStyleSheet('background: transparent; border: none;')
-        self.indicator_label.setAlignment(Qt.AlignCenter)
-        # place indicator aligned to bottom center so its bottom edge meets the card's bottom margin
-        card_layout.addWidget(self.indicator_label, alignment=Qt.AlignHCenter | Qt.AlignBottom)
-
-        # make the card occupy the widget area (no extra outer stretch)
-        layout.addWidget(card_widget)
+        # 燈號（可點擊）
+        self.light_label = ClickableLabel()
+        self.light_label.setFixedSize(48, 48)
+        self.light_label.setStyleSheet('QLabel { background: transparent; border: none; }')
+        self.light_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.light_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.light_label.clicked.connect(self._on_light_clicked)
+        layout.addWidget(self.light_label, alignment=Qt.AlignmentFlag.AlignHCenter)
         
+        layout.addSpacing(0)
+        
+        # 計時器（閃爍）
         self.blink_timer = QTimer()
-        self.blink_timer.timeout.connect(self._toggle_blink)
+        self.blink_timer.timeout.connect(self._on_blink)
         self.blink_interval = 500
         
         self.set_state('normal')
-        # only the indicator should show a pointing-hand cursor to avoid mis-clicks
-        try:
-            self.indicator_label.setCursor(Qt.PointingHandCursor)
-        except Exception:
-            pass
     
-    def mousePressEvent(self, event):
-        """Open popup only when clicking the indicator (to avoid mis-clicks)."""
-        try:
-            # map the indicator label rect into this widget's coordinates
-            top_left = self.indicator_label.mapTo(self, self.indicator_label.rect().topLeft())
-            bottom_right = self.indicator_label.mapTo(self, self.indicator_label.rect().bottomRight())
-            ind_rect = QRect(top_left, bottom_right)
-        except Exception:
-            # fallback to geometry (may be parent-relative)
-            ind_rect = self.indicator_label.geometry()
-
-        if ind_rect.contains(event.pos()):
-            # use card's displayed name and type for popup title/content
-            try:
-                room_num = self.button_label.text()
-                room_type_text = self.type_label.text().replace('\n', ' ')
-            except Exception:
-                room_num = str(self.room_id)
-                room_type_text = self.room_type
-
-            # title: show room number + first line of type (e.g. '307 客房')
-            first_type_line = self.type_label.text().splitlines()[0] if self.type_label.text() else ''
-            title = f"{room_num} {first_type_line}".strip()
-            # message: show number + full type (preserve newline from card)
-            message = f"{room_num}\n{self.type_label.text()}"
-            # map current widget state to popup initial_state expected values
-            initial_state = 'red' if self.state == 'alarm' else 'green'
-
-            popup = PopupDialog(title, message, initial_state)
-            result = popup.exec_()
-            if result == QDialog.Accepted:
-                self.set_state(popup.selected_state)
-                self.state_changed.emit(popup.selected_state)
+    def _update_card_style(self):
+        """根據系統淺色/深色模式更新卡片樣式。"""
+        # 偵測淺色/深色模式
+        app = QApplication.instance()
+        if app:
+            palette = app.palette()
+            bg_color = palette.color(palette.ColorRole.Window)
+            # 計算背景亮度
+            lum = 0.2126 * bg_color.red() + 0.7152 * bg_color.green() + 0.0722 * bg_color.blue()
+            is_light = lum > 128
         else:
-            # ignore clicks outside the indicator (do not open popup)
-            super().mousePressEvent(event)
+            is_light = False
+        
+        if is_light:
+            # 淺色模式：較深的卡片背景
+            self.setStyleSheet('''
+                QWidget#RoomCard {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #e8e8e8, stop:1 #d8d8d8);
+                    border: 2px solid #b0b0b0;
+                    border-radius: 5px;
+                }
+            ''')
+        else:
+            # 深色模式：較亮的卡片背景
+            self.setStyleSheet('''
+                QWidget#RoomCard {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #4a4a4a, stop:1 #3a3a3a);
+                    border: 2px solid #5a5a5a;
+                    border-radius: 5px;
+                }
+            ''')
+    
+    def _on_light_clicked(self):
+        """點擊燈號打開設置對話。"""
+        if not PopupDialog:
+            return
+        
+        room_num = self.room_label.text()
+        first_line = self.room_type.splitlines()[0] if self.room_type else ''
+        if self.is_public:
+            # include floor for public facilities to avoid duplicate names
+            if getattr(self, 'floor', None):
+                title = f"{self.floor} {first_line}".strip()
+            else:
+                title = first_line
+        else:
+            title = f"{self.room_id} {first_line}".strip()
+        
+        message = f"{room_num}\n{self.pressure_label.text()}"
+        initial_state = 'red' if self.state == 'alarm' else 'green'
+        
+        popup = PopupDialog(title, message, initial_state)
+        if popup.exec() == QDialog.DialogCode.Accepted:
+            self.set_state(popup.selected_state)
+            self.clicked.emit()
     
     def set_state(self, state):
-        """Set indicator state."""
+        """設置狀態。"""
         self.state = state
         if state == 'alarm':
             self.blink_state = False
             self.blink_timer.start(self.blink_interval)
-            self._update_indicator()
+            self._update_light()
         else:
             self.blink_timer.stop()
             self.blink_state = False
-            self._update_indicator()
+            self._update_light()
     
-    def _toggle_blink(self):
-        """Toggle blink."""
+    def _on_blink(self):
         self.blink_state = not self.blink_state
-        self._update_indicator()
+        self._update_light()
     
-    def _update_indicator(self):
-        """Update indicator color."""
+    def _update_light(self):
+        """更新燈號。"""
         if self.state == 'normal':
             color = 'green'
         elif self.state == 'alarm':
@@ -215,327 +228,563 @@ class IndicatorWidget(QWidget):
         else:
             color = 'gray'
         
-        self._set_color(color)
-    
-    def _set_color(self, color):
-        """Set indicator color from PNG file."""
-        color_map = {
-            'green': 'green.png',
-            'red': 'red.png',
-            'yellow': 'yellow.png',
-            'gray': 'gray.png',
-        }
+        # 加載 PNG
+        filename = {'green': 'green.png', 'red': 'red.png', 
+                   'yellow': 'yellow.png', 'gray': 'gray.png'}[color]
+        path = os.path.join(self.img_dir, filename)
         
-        filename = color_map.get(color, 'green.png')
-        img_path = os.path.join(self.img_dir, filename)
-        
-        if os.path.exists(img_path):
+        if os.path.exists(path):
             try:
-                pixmap = QPixmap(img_path)
+                pixmap = QPixmap(path)
                 if not pixmap.isNull():
-                    # scale pixmap to the indicator_label's current size so it fills the surrounding box
-                    w = max(1, self.indicator_label.width())
-                    h = max(1, self.indicator_label.height())
-                    # PNGs are square; use IgnoreAspectRatio to force fill the box exactly
-                    scaled = pixmap.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-                    self.indicator_label.setPixmap(scaled)
-            except Exception as e:
-                print(f'Error loading {img_path}: {e}')
+                    size = self.light_label.width()
+                    scaled = pixmap.scaledToWidth(size, Qt.TransformationMode.SmoothTransformation)
+                    self.light_label.setPixmap(scaled)
+            except:
+                pass
+    
+    def scale_to_size(self, size):
+        """縮放卡片到指定大小。"""
+        self.setFixedSize(size, size)
+        
+        scale = size / 90.0
+        
+        # 縮放字體
+        room_font = QFont('微軟正黑體', max(8, int(11 * scale)), QFont.Weight.Bold)
+        self.room_label.setFont(room_font)
+        
+        pressure_font = QFont('微軟正黑體', max(6, int(8 * scale)), QFont.Weight.Bold)
+        self.pressure_label.setFont(pressure_font)
+        
+        # 縮放燈號
+        light_size = max(30, int(48 * scale))
+        self.light_label.setFixedSize(light_size, light_size)
+        self._update_light()
+
+
+class FloorLabel(QLabel):
+    """樓層標籤（左邊或右邊）。"""
+    def __init__(self, text, width, height=None, align_right=True):
+        super().__init__(text)
+        self._base_font_size = 16
+        self._base_width = width
+        self.setFont(QFont('微軟正黑體', self._base_font_size, QFont.Weight.Bold))
+        # 使用應用程式 palette 設定文字色與底線色，避免硬編碼
+        app = QApplication.instance()
+        if app:
+            pal = app.palette()
+            text_color = pal.color(pal.ColorRole.WindowText).name()
+            highlight = pal.color(pal.ColorRole.Highlight).name()
+            self.setStyleSheet(f'''
+                QLabel {{
+                    color: {text_color};
+                    background: transparent;
+                    border-bottom: 2px solid {highlight};
+                    padding: 0px;
+                    margin: 0px;
+                }}
+            ''')
+        else:
+            self.setStyleSheet('''
+                QLabel {
+                    background: transparent;
+                    border-bottom: 2px solid #2EA3FF;
+                    padding: 0px;
+                    margin: 0px;
+                }
+            ''')
+        # 左側標籤文字靠右，右側標籤文字靠左
+        if align_right:
+            self.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        else:
+            self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        self.setMinimumWidth(40)
+        self.setMaximumWidth(width)
+        if height is not None:
+            self.setFixedHeight(height)
+        self.min_height = height
+    
+    def scale_to_size(self, scale):
+        """根據比例縮放字體和寬度。"""
+        font_size = max(10, int(self._base_font_size * scale))
+        self.setFont(QFont('微軟正黑體', font_size, QFont.Weight.Bold))
+        new_width = max(40, int(self._base_width * scale))
+        self.setFixedWidth(new_width)
 
 
 class ScadaDialog(QMainWindow):
-    """Main SCADA window matching Excel layout exactly."""
+    """主視窗 - 完整的房間管理介面。"""
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setWindowTitle('北投享溫泉 保全壓扣系統 by lioil')
         
         self.workspace_root = Path(__file__).parent.parent
-        # Image directory and indicator registry
         self.img_dir = os.path.join(self.workspace_root, 'img')
-        self._indicator_widgets = {}
-        # Track number of card 'slots' per row to compute scaling
-        self._row_slot_counts = []
-        # Base layout metrics (used to compute proportional sizes)
-        self.BASE_WINDOW_WIDTH = 1600
-        self.BASE_WINDOW_HEIGHT = 1000
-        self.BASE_CARD_SIZE = 180
-        self.BASE_H_SPACING = 8
-        self.BASE_SIDE_MARGIN = 20
-        self.MIN_CARD_SIZE = 100
+        self.room_cards = {}  # room_id -> RoomCard
+        self._resizing = False  # 防止 resizeEvent 無限循環
+        self._last_card_size = 0  # 記錄上次卡片大小
         
-        self.setWindowTitle('北投享溫泉 保全壓扣系統 by lioil')
-        self.setGeometry(100, 100, 1600, 1000)
+        # 獲取螢幕可用區域（扣除工具列）
+        screen = QApplication.primaryScreen()
+        if screen:
+            available_geometry = screen.availableGeometry()
+            self.screen_width = available_geometry.width()
+            self.screen_height = available_geometry.height()
+        else:
+            self.screen_width = 1920
+            self.screen_height = 1080
         
-        # Main layout
+        # 設定視窗大小為可用區域
+        self.setGeometry(0, 0, self.screen_width, self.screen_height)
+        
+        # 主佈局（不使用滾動區域）
         main_widget = QWidget()
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        # Scroll area with no horizontal scrollbar
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet('QScrollArea { background-color: #1E2228; border: none; }')
-        scroll.horizontalScrollBar().setStyleSheet('QScrollBar:horizontal { height: 0px; }')
-        scroll.verticalScrollBar().setStyleSheet('QScrollBar:vertical { width: 0px; }')
-        
-        # Room container
-        self.room_container = QWidget()
-        self.room_layout = QVBoxLayout(self.room_container)
-        self.room_layout.setContentsMargins(20, 20, 20, 20)
+        # 房間容器
+        self.room_widget = QWidget()
+        self.room_layout = QVBoxLayout(self.room_widget)
+        self.room_layout.setContentsMargins(10, 8, 10, 10)
         self.room_layout.setSpacing(0)
         
-        # Build layout
-        self._build_layout()
+        # 構建房間佈局
+        self._build_rooms()
         
-        scroll.setWidget(self.room_container)
-        main_layout.addWidget(scroll)
-        
+        main_layout.addWidget(self.room_widget)
         self.setCentralWidget(main_widget)
-        self._apply_dark_bg(main_widget)
         
-        # Maximize window
+        # 背景色 — 使用應用程式主題色，支援系統淺色/深色
+        main_widget.setAutoFillBackground(True)
+        app = QApplication.instance()
+        if app:
+            # 使用全域應用程式 palette，讓視窗背景跟隨系統主題
+            main_widget.setPalette(app.palette())
+        else:
+            # fallback
+            palette = main_widget.palette()
+            palette.setColor(palette.ColorRole.Window, QColor('#1E2228'))
+            main_widget.setPalette(palette)
+        
+        # 設定最小視窗大小，允許自由縮放和 Snap Layouts
+        self.setMinimumSize(800, 500)
+        
+        # 顯示最大化視窗
         self.showMaximized()
+        
+        # 延遲執行初始縮放，確保視窗已經正確顯示
+        QTimer.singleShot(100, self._initial_scale)
     
-    def _create_room_row(self, rooms, show_label=False, label_text="", show_public=False, public_rooms=None):
-        """Create a horizontal row of room cards with optional public rooms."""
-        row_w = QWidget()
-        row_l = QHBoxLayout(row_w)
-        row_l.setContentsMargins(0, 0, 0, 0)
-        row_l.setSpacing(8)
-        
-        # Track slot count for this row (customer rooms + public spacer + public rooms)
-        slots = len(rooms)
-        if show_public and public_rooms:
-            slots += 1 + len(public_rooms)
-        # record slots for later scaling calculations
-        try:
-            self._row_slot_counts.append(slots)
-        except Exception:
-            pass
-
-        # Add customer rooms
-        for room_id, room_type in rooms:
-            indicator = IndicatorWidget(room_id, room_type, self.img_dir)
-            indicator.set_state('normal')
-            row_l.addWidget(indicator)
-            self._indicator_widgets[room_id] = indicator
-        
-        # Add spacer if public rooms follow (mark object name for adaptive resize)
-        if show_public and public_rooms:
-            spacer = QWidget()
-            spacer.setObjectName('public_spacer')
-            spacer.setFixedWidth(self.BASE_CARD_SIZE + self.BASE_H_SPACING)  # initial
-            row_l.addWidget(spacer)
-            
-            # Add public rooms
-            for room_id, room_type in public_rooms:
-                indicator = IndicatorWidget(room_id, room_type, self.img_dir)
-                indicator.set_state('normal')
-                row_l.addWidget(indicator)
-                self._indicator_widgets[f'{label_text}_public_{room_id}'] = indicator
-        
-        # Add floor label on right
-        if show_label:
-            label = QLabel(label_text)
-            label.setObjectName('floor_label')
-            label.setFont(QFont('Arial', 20, QFont.Bold))
-            label.setStyleSheet('color: #2EA3FF; margin: 0px 10px;')
-            label.setAlignment(Qt.AlignCenter)
-            label.setFixedWidth(50)
-            row_l.addWidget(label)
-        
-        row_l.addStretch(1)
-        return row_w
-    
-    def _build_layout(self):
-        """Build exact Excel layout with public rooms beside customer rooms."""
-        
-        # Outer horizontal layout for centering
+    def _build_rooms(self):
+        """構建房間佈局。"""
+        # 外層水平佈局
         outer_h = QHBoxLayout()
         outer_h.setContentsMargins(0, 0, 0, 0)
         outer_h.setSpacing(0)
         outer_h.addStretch(1)
         
-        # Main vertical layout
+        # 主垂直佈局
         main_v = QVBoxLayout()
         main_v.setContentsMargins(0, 0, 0, 0)
-        main_v.setSpacing(0)
-        # add top stretch so content has symmetric stretch above and below
-        # this centers the entire content vertically within available space
-        main_v.addStretch(1)
+        main_v.setSpacing(3)  # 樓層間距與行間距一致
         
-        # 5F container
-        container_5f = QWidget()
-        layout_5f = QVBoxLayout(container_5f)
+        # ===== 5F =====
+        floor_5f = QWidget()
+        layout_5f = QHBoxLayout(floor_5f)
         layout_5f.setContentsMargins(0, 0, 0, 0)
         layout_5f.setSpacing(0)
-        layout_5f.addWidget(self._create_room_row(ROOMS_DATA['5F']['top_row']))
-        layout_5f.addWidget(self._create_room_row(
-            ROOMS_DATA['5F']['customer'],
-            show_label=True,
-            label_text='5F',
-            show_public=True,
-            public_rooms=ROOMS_DATA['5F']['public']
-        ))
-        main_v.addWidget(container_5f)
         
-        # Spacer between floors (increase to separate floors visually)
-        spacer1 = QWidget()
-        spacer1.setFixedHeight(FLOOR_SPACING)
-        main_v.addWidget(spacer1)
+        # 5F 左標籤（動態高度，初始設定為0）
+        label_5f = FloorLabel('5F', 80, align_right=True)
+        self.label_5f = label_5f  # 保存引用以供後續調整
+        layout_5f.addWidget(label_5f, alignment=Qt.AlignmentFlag.AlignBottom)
         
-        # 3F container
-        container_3f = QWidget()
-        layout_3f = QVBoxLayout(container_3f)
+        # 5F 房間（2行）
+        rooms_5f = QVBoxLayout()
+        rooms_5f.setContentsMargins(0, 0, 0, 0)
+        rooms_5f.setSpacing(3)  # 行間距與水平間距一致
+        
+        # 5F 第1行：包含空位
+        row1_5f = QHBoxLayout()
+        row1_5f.setContentsMargins(0, 0, 0, 0)
+        row1_5f.setSpacing(3)
+        self._spacers_5f_row1 = []  # 保存空位引用
+        for item in ROOMS_DATA['5F']['row1']:
+            if item is None:
+                # 空位
+                spacer = QWidget()
+                spacer.setFixedSize(90, 90)
+                spacer.setObjectName('room_spacer_5f_row1')
+                row1_5f.addWidget(spacer)
+                self._spacers_5f_row1.append(spacer)
+            else:
+                room_id, room_type = item
+                card = RoomCard(room_id, room_type, self.img_dir)
+                row1_5f.addWidget(card)
+                self.room_cards[room_id] = card
+        row1_5f.addStretch(1)
+        rooms_5f.addLayout(row1_5f)
+        
+        # 5F 第2行：6張卡片 + 公共設施
+        row2_5f = QHBoxLayout()
+        row2_5f.setContentsMargins(0, 0, 0, 0)
+        row2_5f.setSpacing(3)
+        for room_id, room_type in ROOMS_DATA['5F']['row2']:
+            card = RoomCard(room_id, room_type, self.img_dir)
+            row2_5f.addWidget(card)
+            self.room_cards[room_id] = card
+        
+        # 間隙
+        spacer = QWidget()
+        spacer.setFixedWidth(100)
+        spacer.setObjectName('spacer_5f_public')
+        row2_5f.addWidget(spacer)
+        
+        # 公共設施
+        for room_id, room_type in ROOMS_DATA['5F']['public']:
+            card = RoomCard(room_id, room_type, self.img_dir, is_public=True, floor='5F')
+            row2_5f.addWidget(card)
+            self.room_cards[f'public_5f_{room_id}'] = card
+        
+        # 右側 5F 標籤
+        label_5f_right = FloorLabel('5F', 90, align_right=False)
+        self.label_5f_right = label_5f_right  # 保存引用
+        row2_5f.addWidget(label_5f_right, alignment=Qt.AlignmentFlag.AlignBottom)
+        row2_5f.addStretch(1)
+        
+        rooms_5f.addLayout(row2_5f)
+        
+        layout_5f.addLayout(rooms_5f)
+        main_v.addWidget(floor_5f)
+        
+        # ===== 3F =====
+        floor_3f = QWidget()
+        layout_3f = QHBoxLayout(floor_3f)
         layout_3f.setContentsMargins(0, 0, 0, 0)
         layout_3f.setSpacing(0)
-        layout_3f.addWidget(self._create_room_row(ROOMS_DATA['3F']['customer']))
-        layout_3f.addWidget(self._create_room_row(
-            ROOMS_DATA['3F']['customer2'],
-            show_label=True,
-            label_text='3F'
-        ))
-        main_v.addWidget(container_3f)
         
-        # Spacer between floors (increase to separate floors visually)
-        spacer2 = QWidget()
-        spacer2.setFixedHeight(FLOOR_SPACING)
-        main_v.addWidget(spacer2)
+        # 3F 左標籤
+        label_3f = FloorLabel('3F', 80, align_right=True)
+        self.label_3f = label_3f  # 保存引用
+        layout_3f.addWidget(label_3f, alignment=Qt.AlignmentFlag.AlignBottom)
         
-        # 2F container
-        container_2f = QWidget()
-        layout_2f = QVBoxLayout(container_2f)
+        # 3F 房間
+        rooms_3f = QVBoxLayout()
+        rooms_3f.setContentsMargins(0, 0, 0, 0)
+        rooms_3f.setSpacing(3)  # 行間距與水平間距一致
+        
+        # 3F 第1行：包含空位
+        row1_3f = QHBoxLayout()
+        row1_3f.setContentsMargins(0, 0, 0, 0)
+        row1_3f.setSpacing(3)
+        self._spacers_3f_row1 = []  # 保存空位引用
+        for item in ROOMS_DATA['3F']['row1']:
+            if item is None:
+                # 空位
+                spacer = QWidget()
+                spacer.setFixedSize(90, 90)
+                spacer.setObjectName('room_spacer_3f_row1')
+                row1_3f.addWidget(spacer)
+                self._spacers_3f_row1.append(spacer)
+            else:
+                room_id, room_type = item
+                card = RoomCard(room_id, room_type, self.img_dir)
+                row1_3f.addWidget(card)
+                self.room_cards[room_id] = card
+        row1_3f.addStretch(1)
+        rooms_3f.addLayout(row1_3f)
+        
+        # 3F 第2行：6張卡片
+        row2_3f = QHBoxLayout()
+        row2_3f.setContentsMargins(0, 0, 0, 0)
+        row2_3f.setSpacing(3)
+        for room_id, room_type in ROOMS_DATA['3F']['row2']:
+            card = RoomCard(room_id, room_type, self.img_dir)
+            row2_3f.addWidget(card)
+            self.room_cards[room_id] = card
+        row2_3f.addStretch(1)
+        rooms_3f.addLayout(row2_3f)
+        
+        layout_3f.addLayout(rooms_3f)
+        main_v.addWidget(floor_3f)
+        
+        # ===== 2F & 1F =====
+        floor_2f = QWidget()
+        layout_2f = QHBoxLayout(floor_2f)
         layout_2f.setContentsMargins(0, 0, 0, 0)
         layout_2f.setSpacing(0)
-        layout_2f.addWidget(self._create_room_row(ROOMS_DATA['2F']['customer']))
-        layout_2f.addWidget(self._create_room_row(
-            ROOMS_DATA['2F']['customer2'],
-            show_label=True,
-            label_text='2F',
-            show_public=True,
-            public_rooms=ROOMS_DATA['2F']['public']
-        ))
-        main_v.addWidget(container_2f)
         
-        main_v.addStretch(1)
+        # 2F 左標籤
+        label_2f = FloorLabel('2F', 80, align_right=True)
+        self.label_2f = label_2f  # 保存引用
+        layout_2f.addWidget(label_2f, alignment=Qt.AlignmentFlag.AlignBottom)
+        
+        # 2F 房間
+        rooms_2f = QVBoxLayout()
+        rooms_2f.setContentsMargins(0, 0, 0, 0)
+        rooms_2f.setSpacing(3)  # 行間距與水平間距一致
+        
+        # 2F 第1行
+        row1_2f = QHBoxLayout()
+        row1_2f.setContentsMargins(0, 0, 0, 0)
+        row1_2f.setSpacing(3)
+        for room_id, room_type in ROOMS_DATA['2F']['row1']:
+            card = RoomCard(room_id, room_type, self.img_dir)
+            row1_2f.addWidget(card)
+            self.room_cards[room_id] = card
+        row1_2f.addStretch(1)
+        rooms_2f.addLayout(row1_2f)
+        
+        # 2F 第2行：6張卡片（左側客房）+ 公共設施
+        row2_2f = QHBoxLayout()
+        row2_2f.setContentsMargins(0, 0, 0, 0)
+        row2_2f.setSpacing(3)
+        for room_id, room_type in ROOMS_DATA['2F']['row2']:
+            card = RoomCard(room_id, room_type, self.img_dir)
+            row2_2f.addWidget(card)
+            self.room_cards[room_id] = card
+        
+        # 間隙
+        spacer = QWidget()
+        spacer.setFixedWidth(100)
+        spacer.setObjectName('spacer_2f_public')
+        row2_2f.addWidget(spacer)
+        
+        # 公共設施（1F）
+        for room_id, room_type in ROOMS_DATA['2F']['public']:
+            # these public entries are positioned as 1F on the UI
+            card = RoomCard(room_id, room_type, self.img_dir, is_public=True, floor='1F')
+            row2_2f.addWidget(card)
+            self.room_cards[f'public_2f_{room_id}'] = card
+        
+        # 1F 右標籤（只在第2行，與殘障廁所對齊）
+        label_1f = FloorLabel('1F', 90, align_right=False)
+        self.label_1f = label_1f  # 保存引用
+        row2_2f.addWidget(label_1f, alignment=Qt.AlignmentFlag.AlignBottom)
+        row2_2f.addStretch(1)
+        
+        rooms_2f.addLayout(row2_2f)
+        
+        layout_2f.addLayout(rooms_2f)
+        main_v.addWidget(floor_2f)
         
         outer_h.addLayout(main_v)
         outer_h.addStretch(1)
         
-        # Add to room layout
         container = QWidget()
         container.setLayout(outer_h)
         self.room_layout.addWidget(container)
     
-    def _apply_dark_bg(self, widget):
-        """Apply dark background."""
-        widget.setAutoFillBackground(True)
-        pal = widget.palette()
-        pal.setColor(QPalette.Window, QColor('#1E2228'))
-        widget.setPalette(pal)
-    
     def set_room_state(self, room_id, state):
-        """Set room state."""
-        if room_id in self._indicator_widgets:
-            self._indicator_widgets[room_id].set_state(state)
+        """設置房間狀態。"""
+        if room_id in self.room_cards:
+            self.room_cards[room_id].set_state(state)
     
     def get_room_state(self, room_id):
-        """Get room state."""
-        if room_id in self._indicator_widgets:
-            return self._indicator_widgets[room_id].state
+        """獲取房間狀態。"""
+        if room_id in self.room_cards:
+            return self.room_cards[room_id].state
         return None
     
+    def _initial_scale(self):
+        """初始化時執行一次縮放。"""
+        self._last_card_size = 0  # 重置以強制縮放
+        self._do_scale()
+    
     def resizeEvent(self, event):
-        """Handle resize with auto-scaling."""
+        """視窗大小改變時重新縮放卡片。"""
         super().resizeEvent(event)
-        # Determine available width/height for proportional layout
-        content_w = self.room_container.width() if getattr(self, 'room_container', None) is not None else self.width()
-        content_h = self.room_container.height() if getattr(self, 'room_container', None) is not None else self.height()
-
-        # Use safe fallbacks
-        avail_w = content_w if content_w and content_w > 0 else self.width()
-        avail_h = content_h if content_h and content_h > 0 else self.height()
-
-        # Compute scale factors relative to base window
-        scale_w = avail_w / float(self.BASE_WINDOW_WIDTH)
-        scale_h = avail_h / float(self.BASE_WINDOW_HEIGHT)
-        # preserve proportions: use the smaller scale so whole layout fits
-        global_scale = min(scale_w, scale_h)
-
-        # Derived sizes
-        h_spacing = max(4, int(self.BASE_H_SPACING * global_scale))
-        side_margin = max(8, int(self.BASE_SIDE_MARGIN * global_scale))
-        floor_space_scaled = max(4, int(FLOOR_SPACING * global_scale))
-
-        # compute widest row slots and number of rows
-        try:
-            max_slots = max(self._row_slot_counts) if self._row_slot_counts else 1
-        except Exception:
-            max_slots = 1
-        try:
-            num_rows = len(self._row_slot_counts) if self._row_slot_counts else 1
-        except Exception:
-            num_rows = 1
-
-        # card width constrained by available width
-        card_w_by_width = max(self.MIN_CARD_SIZE, int((avail_w - 2 * side_margin - (max_slots - 1) * h_spacing) / max_slots))
-
-        # card height constrained by available height (consider floor spacers and some padding)
-        vertical_padding = 2 * side_margin + (max(0, len(ROOMS_DATA) - 1) * floor_space_scaled) + (num_rows - 1) * h_spacing + 40
-        card_h_by_height = max(self.MIN_CARD_SIZE, int((avail_h - vertical_padding) / num_rows))
-
-        # final card size is the limiting dimension; keep square cards
-        card_size = min(card_w_by_width, card_h_by_height)
-        scale = card_size / float(self.BASE_CARD_SIZE)
-
-        # Update indicator widgets sizes and fonts
-        for key, widget in list(self._indicator_widgets.items()):
-            try:
-                if widget is None or widget.parent() is None:
-                    continue
-
-                new_w = max(self.MIN_CARD_SIZE, int(card_size))
-                new_h = max(self.MIN_CARD_SIZE, int(card_size))
-                widget.setMinimumSize(new_w, new_h)
-                widget.setMaximumSize(new_w, new_h)
-
-                btn_font = widget.button_label.font()
-                btn_font.setPointSize(max(10, int(12 * scale)))
-                widget.button_label.setFont(btn_font)
-
-                type_font = widget.type_label.font()
-                type_font.setPointSize(max(9, int(10 * scale)))
-                widget.type_label.setFont(type_font)
-
-                # compute indicator size so it never exceeds the card inner height
-                # available = card_size - margins - labels heights - extra spacing
+        
+        # 防止無限循環
+        if self._resizing:
+            return
+        
+        # 執行縮放
+        self._do_scale()
+    
+    def _do_scale(self):
+        """執行卡片縮放邏輯。"""
+        avail_w = self.room_widget.width() if self.room_widget else self.width()
+        avail_h = self.room_widget.height() if self.room_widget else self.height()
+        
+        if avail_w <= 0:
+            avail_w = 1600
+        if avail_h <= 0:
+            avail_h = 900
+        
+        # 基準佈局參數（基於 90px 卡片大小）
+        BASE_CARD = 90
+        BASE_LEFT_LABEL = 80
+        BASE_RIGHT_LABEL = 90
+        H_MARGINS = 20     # 左右邊距
+        V_MARGINS = 18     # 上下邊距 (10 + 8)
+        SPACING = 3        # 卡片間距
+        MAX_CARDS_H = 9    # 水平最大卡片數
+        TOTAL_ROWS = 6     # 垂直總行數
+        FLOOR_GAPS = 2     # 樓層之間的間隙數量
+        ROW_GAPS = 3       # 每層樓內的行間距數量
+        
+        # 先用固定標籤寬度估算卡片大小
+        est_label_w = BASE_LEFT_LABEL + BASE_RIGHT_LABEL
+        available_w = avail_w - H_MARGINS - est_label_w - SPACING
+        card_size_by_width = int((available_w - (MAX_CARDS_H - 1) * SPACING) / MAX_CARDS_H)
+        
+        # 根據高度計算卡片大小
+        total_gaps = ROW_GAPS + FLOOR_GAPS
+        available_h = avail_h - V_MARGINS - total_gaps * SPACING
+        card_size_by_height = int(available_h / TOTAL_ROWS)
+        
+        # 取較小值以確保全部顯示
+        card_size = max(60, min(card_size_by_width, card_size_by_height))
+        
+        # 如果卡片大小沒有改變，不需要重新縮放
+        if card_size == self._last_card_size:
+            return
+        
+        self._resizing = True
+        self._last_card_size = card_size
+        
+        # 縮放所有卡片
+        for card in self.room_cards.values():
+            if card:
                 try:
-                    label_h = widget.button_label.sizeHint().height() + widget.type_label.sizeHint().height()
-                except Exception:
-                    label_h = 40
-                margins_top = 12
-                margins_bottom = 6
-                extra_spacing = 12
-                available = int(card_size - (margins_top + margins_bottom) - label_h - extra_spacing)
-                # prefer a large fraction but clamp to available inner height
-                preferred = int(card_size * 0.6)
-                ind_size = max(36, min(preferred, max(24, available)))
-                if ind_size < 24:
-                    ind_size = 24
-                widget.indicator_label.setFixedSize(ind_size, ind_size)
-
-            except Exception:
-                if key in self._indicator_widgets:
-                    del self._indicator_widgets[key]
-
-        # Adapt public spacers and floor labels to new card size
-        for child in self.room_container.findChildren(QWidget):
+                    card.scale_to_size(card_size)
+                except:
+                    pass
+        
+        # 計算縮放比例
+        scale = card_size / 90.0
+        
+        # 縮放樓層標籤
+        for label in [self.label_5f, self.label_3f, self.label_2f, 
+                      self.label_5f_right, self.label_1f]:
+            if label and hasattr(label, 'scale_to_size'):
+                label.scale_to_size(scale)
+        
+        # 縮放公共設施間隙和房間空位
+        spacer_size = int(card_size + SPACING)
+        for child in self.room_widget.findChildren(QWidget):
             try:
-                name = child.objectName()
-                if name and name.startswith('public_spacer'):
-                    child.setFixedWidth(int(card_size + h_spacing))
-                if name and name.startswith('floor_label'):
-                    child.setFixedWidth(max(30, int(50 * global_scale)))
-            except Exception:
+                obj_name = child.objectName()
+                if obj_name.startswith('spacer_'):
+                    child.setFixedWidth(spacer_size)
+                elif obj_name.startswith('room_spacer_'):
+                    child.setFixedSize(card_size, card_size)
+            except:
                 pass
+        
+        # 動態計算樓層標籤高度
+        self._update_floor_label_heights()
+        
+        self._resizing = False
+    
+    def _update_floor_label_heights(self):
+        """根據房間卡片的實際高度動態更新樓層標籤高度。
+        
+        根據 scada.png 的布局要求：
+        - 左側5F底線：對齊501客房的燈號下緣
+        - 左側3F底線：對齊301客房的燈號下緣
+        - 左側2F底線：對齊201客房的燈號下緣
+        - 右側5F底線：對齊右上角殘障廁所的燈號下緣
+        - 右側1F底線：對齊右下角殘障廁所的燈號下緣
+        """
+        if not hasattr(self, 'room_cards') or not self.room_cards:
+            return
+        
+        # 獲取第一張卡片的實際高度（所有卡片高度相同）
+        first_card = next(iter(self.room_cards.values()), None)
+        if not first_card:
+            return
+        
+        card_height = first_card.height()
+        if card_height <= 0:
+            return
+        
+        # 左側標籤：覆蓋該樓層的2行房間，底線對齊第2行燈號下緣
+        # 由於使用 AlignBottom，標籤高度設為 2 * card_height 會使底線對齊第2行底部
+        height_2rows = 2 * card_height
+        
+        # 5F 左側標籤：對齊501客房燈號下緣（2行高度）
+        if hasattr(self, 'label_5f') and self.label_5f:
+            self.label_5f.setFixedHeight(height_2rows)
+        
+        # 5F 右側標籤：只在第2行，對齊殘障廁所燈號下緣（1行高度）
+        if hasattr(self, 'label_5f_right') and self.label_5f_right:
+            self.label_5f_right.setFixedHeight(card_height)
+        
+        # 3F 左側標籤：對齊301客房燈號下緣（2行高度）
+        if hasattr(self, 'label_3f') and self.label_3f:
+            self.label_3f.setFixedHeight(height_2rows)
+        
+        # 2F 左側標籤：對齊201客房燈號下緣（2行高度）
+        if hasattr(self, 'label_2f') and self.label_2f:
+            self.label_2f.setFixedHeight(height_2rows)
+        
+        # 1F 右側標籤：只在第2行，對齊殘障廁所燈號下緣（1行高度）
+        if hasattr(self, 'label_1f') and self.label_1f:
+            self.label_1f.setFixedHeight(card_height)
+
+    def _apply_palette(self):
+        """Apply the current application palette to labels and components that used
+        to have hard-coded colors, so they follow the system theme.
+        """
+        app = QApplication.instance()
+        if not app:
+            return
+        pal = app.palette()
+
+        # Update room cards' labels
+        for card in self.room_cards.values():
+            try:
+                if hasattr(card, 'room_label'):
+                    card.room_label.setPalette(pal)
+                if hasattr(card, 'pressure_label'):
+                    card.pressure_label.setPalette(pal)
+            except:
+                pass
+
+        # Update floor labels style (recompute border color)
+        highlight = pal.color(pal.ColorRole.Highlight).name()
+        text_color = pal.color(pal.ColorRole.WindowText).name()
+        for attr in ('label_5f', 'label_3f', 'label_2f', 'label_5f_right', 'label_1f'):
+            lbl = getattr(self, attr, None)
+            if lbl:
+                try:
+                    lbl.setStyleSheet(f"""
+                        QLabel {{
+                            color: {text_color};
+                            background: transparent;
+                            border-bottom: 2px solid {highlight};
+                            padding: 0px;
+                            margin: 0px;
+                        }}
+                    """)
+                except:
+                    pass
+    
+    def changeEvent(self, event):
+        """處理視窗狀態變化事件，修改還原按鈕行為。"""
+        # Window state change (restore down behavior)
+        if event.type() == QEvent.Type.WindowStateChange:
+            # 檢查是否從最大化狀態變為正常狀態
+            if (event.oldState() & Qt.WindowState.WindowMaximized) and not (self.windowState() & Qt.WindowState.WindowMaximized):
+                # 從最大化變為正常，將視窗調整為螢幕的50%
+                screen = QApplication.primaryScreen()
+                if screen:
+                    screen_geometry = screen.geometry()
+                    new_width = int(screen_geometry.width() * 0.5)
+                    new_height = int(screen_geometry.height() * 0.5)
+                    new_x = (screen_geometry.width() - new_width) // 2
+                    new_y = (screen_geometry.height() - new_height) // 2
+                    self.setGeometry(new_x, new_y, new_width, new_height)
+        # Application palette change (system theme changed)
+        elif event.type() == QEvent.Type.ApplicationPaletteChange:
+            # Re-apply palette-derived styles to labels and widgets
+            try:
+                self._apply_palette()
+            except:
+                pass
+        
+        super().changeEvent(event)
