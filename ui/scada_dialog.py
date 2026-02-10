@@ -651,8 +651,12 @@ class ScadaDialog(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle('北投享溫泉 保全壓扣系統 by lioil')
         
-        self.workspace_root = Path(__file__).parent.parent
-        self.img_dir = os.path.join(self.workspace_root, 'img')
+        if hasattr(sys, '_MEIPASS'):
+            self.workspace_root = Path(sys._MEIPASS)
+            self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
+        else:
+            self.workspace_root = Path(__file__).parent.parent
+            self.img_dir = os.path.join(self.workspace_root, 'img')
         self.setWindowIcon(QIcon(os.path.join(self.img_dir, '享溫泉.ico')))
         self.room_cards = {}  # room_id -> RoomCard
         self._resizing = False  # 防止 resizeEvent 無限循環
@@ -765,7 +769,7 @@ class ScadaDialog(QMainWindow):
     def _load_opcua_tags(self):
         """Load OPC UA tags from CSV file."""
         tags = []
-        csv_path = self.workspace_root / 'OPC UA tag.csv'
+        csv_path = self.workspace_root / '_internal' / 'OPC UA tag.csv'
         try:
             with open(csv_path, 'r', encoding='utf-8-sig') as f:  # utf-8-sig handles BOM
                 reader = csv.DictReader(f)

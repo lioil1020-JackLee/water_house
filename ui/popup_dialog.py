@@ -26,8 +26,12 @@ class NumpadDialog(QDialog):
         super().__init__(parent)
         self.setModal(True)
         self.setWindowTitle("數字鍵盤")
-        self.workspace_root = Path(__file__).parent.parent
-        self.img_dir = os.path.join(self.workspace_root, 'img')
+        if hasattr(sys, '_MEIPASS'):
+            self.workspace_root = Path(sys._MEIPASS)
+            self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
+        else:
+            self.workspace_root = Path(__file__).parent.parent
+            self.img_dir = os.path.join(self.workspace_root, 'img')
         self.setWindowIcon(QIcon(os.path.join(self.img_dir, '享溫泉.ico')))
         self._remove_help_button()
         # base (original) sizes for scaling calculations
@@ -267,8 +271,12 @@ class PopupDialog(QDialog):
     ):
         super().__init__()
         self.setWindowTitle(title)
-        self.workspace_root = Path(__file__).parent.parent
-        self.img_dir = os.path.join(self.workspace_root, 'img')
+        if hasattr(sys, '_MEIPASS'):
+            self.workspace_root = Path(sys._MEIPASS)
+            self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
+        else:
+            self.workspace_root = Path(__file__).parent.parent
+            self.img_dir = os.path.join(self.workspace_root, 'img')
         self.setWindowIcon(QIcon(os.path.join(self.img_dir, '享溫泉.ico')))
         self._remove_help_button()
         self.setModal(True)

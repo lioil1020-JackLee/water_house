@@ -5,7 +5,7 @@ a = Analysis(
     ['water_house.py'],
     pathex=[],
     binaries=[],
-    datas=[('img', 'img'), ('ui', 'ui')],
+    datas=[('img', 'img'), ('ui', 'ui'), ('OPC UA tag.csv', 'OPC UA tag.csv')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -19,9 +19,10 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
-    name='main',
+    name='water_house',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -33,13 +34,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['img\\享溫泉.ico'],
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='main',
 )
