@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import ctypes
 from PyQt6.QtWidgets import (
     QDialog,
     QLabel,
@@ -12,8 +13,10 @@ from PyQt6.QtWidgets import (
     QWidget,
     QApplication,
 )
-from PyQt6.QtCore import Qt, QSize, QEvent
+from PyQt6.QtCore import Qt, QSize, QEvent, QThread, pyqtSignal, QTimer, pyqtSlot
 from PyQt6.QtGui import QFont, QIcon, QPalette, QColor
+import asyncio
+from asyncua import Client
 
 
 class NumpadDialog(QDialog):
@@ -23,39 +26,49 @@ class NumpadDialog(QDialog):
         super().__init__(parent)
         self.setModal(True)
         self.setWindowTitle("數字鍵盤")
+        self.workspace_root = Path(__file__).parent.parent
+        self.img_dir = os.path.join(self.workspace_root, 'img')
+        self.setWindowIcon(QIcon(os.path.join(self.img_dir, '享溫泉.ico')))
         self._remove_help_button()
         # base (original) sizes for scaling calculations
         self._base_width = 640
         self._base_height = 840
-        self._base_display_h = 80
-        self._base_display_font = 48
-        self._base_btn_w = 160
-        self._base_btn_h = 128
-        self._base_btn_font = 44
-        self._base_ok_h = 96
-        self._base_ok_font = 48
-
         # start at 70% of base size but allow resizing so layout can scale
-        self.resize(int(self._base_width * 0.7), int(self._base_height * 0.7))
-        self.setMinimumSize(320, 420)
-        # remove minimize and maximize/restore buttons; keep close
+        self.setFixedSize(int(self._base_width * 0.8), int(self._base_height * 0.8))
+        # No minimum size since we're using fixed size
+        # remove minimize and maximize/restore buttons; keep title bar and close button
         try:
-            self.setWindowFlag(Qt.WindowMinimizeButtonHint, False)
-            self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
-            self.setWindowFlag(Qt.WindowCloseButtonHint, True)
+            # Use WindowsSystemHint to get more control
+            self.setWindowFlags(
+                Qt.WindowType.Dialog
+                | Qt.WindowType.WindowTitleHint
+                | Qt.WindowType.WindowCloseButtonHint
+                | Qt.WindowType.WindowSystemMenuHint
+            )
         except Exception:
-            pass
+            try:
+                # Alternative approach
+                flags = self.windowFlags()
+                flags = flags & ~Qt.WindowType.WindowMinimizeButtonHint
+                flags = flags & ~Qt.WindowType.WindowMaximizeButtonHint
+                self.setWindowFlags(flags)
+            except Exception:
+                pass
         self.value = initial
+        self.initial_value = initial
+        self.first_press = True
 
         v = QVBoxLayout(self)
-        v.setContentsMargins(8, 8, 8, 8)
+        v.setContentsMargins(12, 12, 12, 12)
+        v.setSpacing(10)
 
+        # Display area
         self.display = QLineEdit(initial)
         self.display.setReadOnly(True)
         self.display.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.display.setFixedHeight(96)
+        self.display.setFixedHeight(80)
         f = QFont("微軟正黑體")
-        f.setPointSize(40)
+        f.setPointSize(32)
         self.display.setFont(f)
         # style display using application palette so it matches theme
         try:
@@ -76,7 +89,9 @@ class NumpadDialog(QDialog):
             pass
         v.addWidget(self.display)
 
+        # Numpad buttons grid
         grid = QGridLayout()
+        grid.setSpacing(8)
         self._grid = grid
         buttons = [
             ("7", 0, 0),
@@ -93,11 +108,17 @@ class NumpadDialog(QDialog):
             ("←", 3, 2),
         ]
         self._numpad_buttons = []
+        # Calculate button size based on window size
+        btn_width = int(
+            (self._base_width * 0.8 - 40) / 3 - 20
+        )  # Account for margins and spacing
+        btn_height = int(btn_width * 0.75)  # 3:4 ratio
+
         for txt, r, c in buttons:
             b = QPushButton(txt)
-            b.setFixedSize(160, 128)
+            b.setFixedSize(btn_width, btn_height)
             bf = QFont("微軟正黑體")
-            bf.setPointSize(44)
+            bf.setPointSize(int(btn_width * 0.25))  # Scale font with button size
             b.setFont(bf)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             # do not receive focus by default so no "selected" outline shows
@@ -108,9 +129,7 @@ class NumpadDialog(QDialog):
                 pal = QApplication.instance().palette()
                 b_bg = pal.color(QPalette.ColorRole.Button).name()
                 b_text = pal.color(QPalette.ColorRole.ButtonText).name()
-                b.setStyleSheet(
-                    f"background:{b_bg}; color:{b_text}; font-size:{self._base_btn_font}px;"
-                )
+                b.setStyleSheet(f"background:{b_bg}; color:{b_text};")
             except Exception:
                 pass
             self._numpad_buttons.append(b)
@@ -118,10 +137,11 @@ class NumpadDialog(QDialog):
 
         v.addLayout(grid)
 
+        # OK button
         ok = QPushButton("OK")
-        ok.setFixedHeight(96)
+        ok.setFixedHeight(70)
         of = QFont("微軟正黑體")
-        of.setPointSize(24)
+        of.setPointSize(20)
         ok.setFont(of)
         ok.setCursor(Qt.CursorShape.PointingHandCursor)
         ok.clicked.connect(self.accept)
@@ -133,58 +153,6 @@ class NumpadDialog(QDialog):
         except Exception:
             pass
         v.addWidget(ok)
-        # apply initial scaling so child widgets match window size
-        try:
-            self._apply_scale()
-        except Exception:
-            pass
-
-    def resizeEvent(self, event):
-        try:
-            self._apply_scale()
-        except Exception:
-            pass
-        super().resizeEvent(event)
-
-    def _apply_scale(self):
-        # compute uniform scale based on width
-        w = max(1, self.width())
-        scale = w / float(self._base_width)
-        # display height and font
-        try:
-            self.display.setFixedHeight(max(24, int(self._base_display_h * scale)))
-            df = QFont(self.display.font())
-            df.setPointSize(max(8, int(self._base_display_font * scale)))
-            self.display.setFont(df)
-        except Exception:
-            pass
-        # buttons
-        try:
-            for b in getattr(self, "_numpad_buttons", []):
-                b.setFixedSize(
-                    max(48, int(self._base_btn_w * scale)),
-                    max(48, int(self._base_btn_h * scale)),
-                )
-                bf = QFont(b.font())
-                bf.setPointSize(max(8, int(self._base_btn_font * scale)))
-                b.setFont(bf)
-        except Exception:
-            pass
-        # OK button
-        try:
-            # find ok button (last widget in layout)
-            ok = None
-            for w in self.findChildren(QPushButton):
-                if w.text() == "OK":
-                    ok = w
-                    break
-            if ok is not None:
-                ok.setFixedHeight(max(24, int(self._base_ok_h * scale)))
-                of = QFont(ok.font())
-                of.setPointSize(max(8, int(self._base_ok_font * scale)))
-                ok.setFont(of)
-        except Exception:
-            pass
 
     def _apply_palette(self):
         app = QApplication.instance()
@@ -239,11 +207,23 @@ class NumpadDialog(QDialog):
                 pass
 
     def _on_btn(self, t: str):
-        txt = self.display.text()
         if t == "←":
-            txt = txt[:-1] if txt else ""
+            txt = self.display.text()
+            if not txt:
+                # If empty, reset to initial value
+                txt = self.initial_value
+                self.first_press = True
+            else:
+                txt = txt[:-1]
+                if not txt:
+                    txt = self.initial_value
+                    self.first_press = True
         else:
-            txt = txt + t
+            if self.first_press:
+                txt = t
+                self.first_press = False
+            else:
+                txt = self.display.text() + t
         # sanitize: allow only one dot
         if txt.count(".") > 1:
             # ignore extra
@@ -252,9 +232,25 @@ class NumpadDialog(QDialog):
         if txt and txt != "." and txt[0] == "0" and len(txt) > 1 and txt[1] != ".":
             txt = txt.lstrip("0") or "0"
         self.display.setText(txt)
+        self.value = txt
 
     def get_value(self) -> str:
         return self.display.text()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Remove minimize and maximize buttons using Windows API
+        try:
+            hwnd = int(self.winId())
+            # WS_MINIMIZEBOX = 0x00020000, WS_MAXIMIZEBOX = 0x00010000
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, -16)  # GWL_STYLE
+            style &= ~0x00020000  # Remove WS_MINIMIZEBOX
+            style &= ~0x00010000  # Remove WS_MAXIMIZEBOX
+            ctypes.windll.user32.SetWindowLongW(hwnd, -16, style)
+            # Force redraw
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x27)  # SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+        except Exception:
+            pass
 
 
 class PopupDialog(QDialog):
@@ -263,9 +259,17 @@ class PopupDialog(QDialog):
         title: str = "Alert Popup",
         message: str = "",
         initial_state: str = "green",
+        initial_delay: float = 0.0,
+        parent_dialog=None,
+        enable_tag=None,
+        reset_tag=None,
+        delay_tag=None,
     ):
         super().__init__()
         self.setWindowTitle(title)
+        self.workspace_root = Path(__file__).parent.parent
+        self.img_dir = os.path.join(self.workspace_root, 'img')
+        self.setWindowIcon(QIcon(os.path.join(self.img_dir, '享溫泉.ico')))
         self._remove_help_button()
         self.setModal(True)
         # base sizes for scaling
@@ -281,60 +285,129 @@ class PopupDialog(QDialog):
         self._base_suffix_font = 40
 
         # set fixed size, no resizing allowed
-        self.setFixedSize(int(self._base_width * 0.7), int(self._base_height * 0.7))
-        # remove minimize and maximize/restore buttons; keep close
+        self.setFixedSize(int(self._base_width * 0.85), int(self._base_height * 0.85))
+        # remove minimize and maximize/restore buttons; keep title bar and close button
         try:
-            self.setWindowFlag(Qt.WindowMinimizeButtonHint, False)
-            self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
-            self.setWindowFlag(Qt.WindowCloseButtonHint, True)
+            # Use WindowsSystemHint to get more control
+            self.setWindowFlags(
+                Qt.WindowType.Dialog
+                | Qt.WindowType.WindowTitleHint
+                | Qt.WindowType.WindowCloseButtonHint
+                | Qt.WindowType.WindowSystemMenuHint
+            )
         except Exception:
-            pass
+            try:
+                # Alternative approach
+                flags = self.windowFlags()
+                flags = flags & ~Qt.WindowType.WindowMinimizeButtonHint
+                flags = flags & ~Qt.WindowType.WindowMaximizeButtonHint
+                self.setWindowFlags(flags)
+            except Exception:
+                pass
 
         self.selected_state = initial_state
-        # stored alarm delay (seconds)
-        self.alarm_delay = 0.0
+        # stored alarm delay (seconds) - ensure it's always a valid number
+        try:
+            self.alarm_delay = float(initial_delay) if initial_delay is not None else 0.0
+        except (TypeError, ValueError):
+            self.alarm_delay = 0.0
         # locate image directory (project/img)
         self.img_dir = str(Path(__file__).parent.parent.joinpath("img"))
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
+        # Main layout - very simple approach like scada_dialog
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(15, 20, 15, 20)
+        main_layout.setSpacing(15)
 
-        # Content
-        # (Large room number removed; dialog shows only three control rows)
+        # Scale factor
+        scale_factor = 0.85
 
-        # create the interactive widgets first
-        # Alarm toggle button
+        # Row 0: Alarm toggle
+        row0 = QHBoxLayout()
+        row0.setSpacing(15)
+        row0.setContentsMargins(0, 0, 0, 0)
+
+        # Left spacer to push labels away from edge
+        row0.addSpacing(40)  # Increased to move labels right
+
+        self.lbl1 = QLabel("警報開關")
+        self.lbl1.setFont(QFont("微軟正黑體", int(32 * scale_factor)))
+        self.lbl1.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.lbl1.setFixedWidth(140)  # Increased width to prevent text cutoff
+        row0.addWidget(self.lbl1)
+
+        # Fixed spacing to align controls
+        row0.addSpacing(60)  # Increased to move controls further right
+
+        # Extra spacing to align button with edit field
+        row0.addSpacing(80)
+
         self.alarm_toggle = QPushButton()
         self.alarm_toggle.setCheckable(True)
-        # use base sizes; actual scaled sizes applied in _apply_scale
         self._setup_button(
             self.alarm_toggle,
-            QSize(self._base_alarm_btn[0], self._base_alarm_btn[1]),
-            QSize(self._base_alarm_btn[0] - 5, self._base_alarm_btn[1] - 5),
+            QSize(
+                int(self._base_alarm_btn[0] * scale_factor),
+                int(self._base_alarm_btn[1] * scale_factor),
+            ),
+            QSize(
+                int((self._base_alarm_btn[0] - 5) * scale_factor),
+                int((self._base_alarm_btn[1] - 5) * scale_factor),
+            ),
         )
         self.alarm_toggle.toggled.connect(self._on_toggle_alarm)
+        # 初始化時暫時禁用信號，避免初始化時寫入
+        self.alarm_toggle.blockSignals(True)
         self.alarm_toggle.setChecked(initial_state == "red")
+        self.alarm_toggle.blockSignals(False)
+        row0.addWidget(self.alarm_toggle)
 
-        # editable display with border; clicking opens numpad
-        self.delay_edit = QLineEdit("0")
+        row0.addStretch(1)
+        main_layout.addLayout(row0)
+
+        # Row 1: Alarm delay
+        row1 = QHBoxLayout()
+        row1.setSpacing(15)
+        row1.setContentsMargins(0, 0, 0, 0)
+
+        # Left spacer to push labels away from edge (same as row0)
+        row1.addSpacing(40)  # Same as row0
+
+        self.lbl2 = QLabel("警報延遲")
+        self.lbl2.setFont(QFont("微軟正黑體", int(32 * scale_factor)))
+        self.lbl2.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.lbl2.setFixedWidth(140)  # Same as row0 label
+        row1.addWidget(self.lbl2)
+
+        # Same fixed spacing as row0 to align controls
+        row1.addSpacing(60)  # Same as row0
+
+        # Edit field
+        # Format delay display: no decimal if integer, else max one decimal place
+        delay_val = float(self.alarm_delay) if self.alarm_delay is not None else 0.0
+        if delay_val == int(delay_val):
+            delay_display = f"{int(delay_val)}"
+        else:
+            delay_display = f"{delay_val:.1f}"
+        self.delay_edit = QLineEdit(delay_display)
         self.delay_edit.setReadOnly(True)
-        # slightly narrower so suffix label fits beside it (base values)
-        self.delay_edit.setFixedWidth(self._base_delay_w)
-        self.delay_edit.setFixedHeight(self._base_delay_h)
+        self.delay_edit.setFixedWidth(int(self._base_delay_w * scale_factor))
+        self.delay_edit.setFixedHeight(int(self._base_delay_h * scale_factor))
         self.delay_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
         try:
             pal = QApplication.instance().palette()
             base_color = pal.color(QPalette.ColorRole.Base)
             text_hex = pal.color(QPalette.ColorRole.Text).name()
             base_hex = base_color.name()
-            # compute perceived luminance to decide contrasting border color
             r, g, b = base_color.red(), base_color.green(), base_color.blue()
             lum = 0.299 * r + 0.587 * g + 0.114 * b
-            # if background is dark, use white border; else use darker border
             border_hex = (
                 "#ffffff" if lum < 96 else pal.color(QPalette.ColorRole.Dark).name()
             )
-            # make the edit border thinner and padding smaller
             self.delay_edit.setStyleSheet(
                 f"border: 1px solid {border_hex}; border-radius:3px; padding:2px; background: {base_hex}; color: {text_hex};"
             )
@@ -343,96 +416,61 @@ class PopupDialog(QDialog):
                 "border: 1px solid #444; border-radius:4px; padding:4px; background: white;"
             )
         edf = QFont("微軟正黑體")
-        edf.setPointSize(self._base_delay_font)
+        edf.setPointSize(int(self._base_delay_font * scale_factor))
         self.delay_edit.setFont(edf)
         self.delay_edit.setCursor(Qt.CursorShape.PointingHandCursor)
+        row1.addWidget(self.delay_edit)
 
-        # Reset button
-        self.reset_button = QPushButton()
-        self._setup_button(
-            self.reset_button,
-            QSize(self._base_reset_btn[0], self._base_reset_btn[1]),
-            QSize(self._base_reset_icon[0], self._base_reset_icon[1]),
-        )
-        self.reset_button.clicked.connect(self._on_reset)
-
-        # Controls area: use a 2-column grid so right-side widgets share the same center
-        controls_grid = QGridLayout()
-        controls_grid.setHorizontalSpacing(12)
-        controls_grid.setVerticalSpacing(12)
-        # let columns stretch instead of using fixed minimum widths to keep layout flexible
-        controls_grid.setColumnStretch(0, 1)
-        controls_grid.setColumnStretch(1, 2)
-
-        # Alarm toggle (row 0)
-        self.lbl1 = QLabel("警報開關")
-        self.lbl1.setFont(QFont("微軟正黑體", 32))
-        self.lbl1.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        controls_grid.addWidget(
-            self.lbl1, 0, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        c1 = QWidget()
-        # allow container to size dynamically so centering works
-        self._c1 = c1
-        h1 = QHBoxLayout(c1)
-        h1.setContentsMargins(0, 0, 40, 0)
-        h1.addStretch()
-        h1.addWidget(self.alarm_toggle, 0, Qt.AlignmentFlag.AlignCenter)
-        h1.addStretch()
-        controls_grid.addWidget(c1, 0, 1)
-
-        # Alarm delay (row 1)
-        self.lbl2 = QLabel("警報延遲")
-        self.lbl2.setFont(QFont("微軟正黑體", 32))
-        self.lbl2.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        controls_grid.addWidget(
-            self.lbl2, 1, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        c2 = QWidget()
-        # allow container to size dynamically so centering works
-        self._c2 = c2
-        c2.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        h2 = QHBoxLayout(c2)
-        # add left margin so the edit+suffix group shifts right
-        h2.setContentsMargins(30, 0, 0, 0)
-        h2.setSpacing(12)
-        # left-align the group inside the container (remove leading stretch)
-        h2.addWidget(self.delay_edit, 0, Qt.AlignmentFlag.AlignVCenter)
-        # fixed spacing between edit and suffix so suffix shifts right
-        h2.addSpacing(28)
+        # Suffix label
+        row1.addSpacing(10)
         self.lbl_sec = QLabel("秒")
-        self.lbl_sec.setFont(QFont("微軟正黑體", 24))
+        self.lbl_sec.setFont(QFont("微軟正黑體", int(32 * scale_factor)))
         self.lbl_sec.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        # increase left margin to move the suffix further right
-        self.lbl_sec.setContentsMargins(24, 0, 0, 0)
-        # match edit height so baseline/vertical center align
-        self.lbl_sec.setFixedHeight(self.delay_edit.height())
-        h2.addWidget(self.lbl_sec, 0, Qt.AlignmentFlag.AlignVCenter)
-        h2.addStretch()
-        controls_grid.addWidget(c2, 1, 1, Qt.AlignmentFlag.AlignVCenter)
+        row1.addWidget(self.lbl_sec)
 
-        # Reset (row 2)
+        row1.addStretch(1)
+        main_layout.addLayout(row1)
+
+        # Row 2: Reset button
+        row2 = QHBoxLayout()
+        row2.setSpacing(15)
+        row2.setContentsMargins(0, 0, 0, 0)
+
+        # Left spacer to push labels away from edge (same as other rows)
+        row2.addSpacing(40)  # Same as other rows
+
         self.lbl3 = QLabel("警報復歸")
-        self.lbl3.setFont(QFont("微軟正黑體", 32))
+        self.lbl3.setFont(QFont("微軟正黑體", int(32 * scale_factor)))
         self.lbl3.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        controls_grid.addWidget(
-            self.lbl3, 2, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        self.lbl3.setFixedWidth(140)  # Same as other labels
+        row2.addWidget(self.lbl3)
+
+        # Same fixed spacing as other rows to align controls
+        row2.addSpacing(60)  # Same as other rows
+
+        # Extra spacing to align button with edit field (same as row0)
+        row2.addSpacing(80)
+
+        self.reset_button = QPushButton()
+        self._setup_button(
+            self.reset_button,
+            QSize(
+                int(self._base_reset_btn[0] * scale_factor),
+                int(self._base_reset_btn[1] * scale_factor),
+            ),
+            QSize(
+                int(self._base_reset_icon[0] * scale_factor),
+                int(self._base_reset_icon[1] * scale_factor),
+            ),
         )
-        c3 = QWidget()
-        # allow container to size dynamically so centering works
-        self._c3 = c3
-        h3 = QHBoxLayout(c3)
-        h3.setContentsMargins(0, 0, 40, 0)
-        h3.addStretch()
-        h3.addWidget(self.reset_button, 0, Qt.AlignmentFlag.AlignCenter)
-        h3.addStretch()
-        controls_grid.addWidget(c3, 2, 1)
+        self.reset_button.pressed.connect(self._on_reset_pressed)
+        self.reset_button.released.connect(self._on_reset_released)
+        row2.addWidget(self.reset_button)
+
+        row2.addStretch(1)
+        main_layout.addLayout(row2)
 
         # attach mouse click to open numpad
         def _open_npad(evt=None):
@@ -453,42 +491,23 @@ class PopupDialog(QDialog):
                 else:
                     disp = f"{self.alarm_delay:.1f}"
                 self.delay_edit.setText(disp)
+                
+                # Write to OPC UA immediately
+                if hasattr(self, 'parent_dialog') and self.parent_dialog and self.parent_dialog.opcua_client and self.delay_tag:
+                    try:
+                        print(f"Writing delay {self.alarm_delay} to {self.delay_tag}")
+                        write_value = self.alarm_delay
+                        # 立即更新本地緩存和發出信號，UI 立刻反應
+                        self.parent_dialog.opcua_client.current_values[self.delay_tag] = write_value
+                        self.parent_dialog.opcua_client.write_timestamps[self.delay_tag] = __import__('time').time()
+                        self.parent_dialog.opcua_client.update_signal.emit({self.delay_tag: write_value})
+                        # 然後非同步寫入伺服器
+                        self.parent_dialog.opcua_client.write_value(self.delay_tag, write_value)
+                        print("Write delay done")
+                    except Exception as e:
+                        print(f"Error writing delay tag: {e}")
 
         self.delay_edit.mousePressEvent = _open_npad
-
-        # Add spacers to center the controls vertically
-        spacer_top = QWidget()
-        spacer_top.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        layout.addWidget(spacer_top)
-
-        # Create horizontal container to center controls horizontally
-        container = QHBoxLayout()
-        spacer_left = QWidget()
-        spacer_left.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        container.addWidget(spacer_left)
-        # wrap grid in a widget so we can center it reliably
-        controls_widget = QWidget()
-        controls_widget.setLayout(controls_grid)
-        controls_widget.setSizePolicy(
-            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
-        )
-        container.addWidget(controls_widget, 0, Qt.AlignmentFlag.AlignCenter)
-        spacer_right = QWidget()
-        spacer_right.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        container.addWidget(spacer_right)
-        layout.addLayout(container)
-
-        spacer_bottom = QWidget()
-        spacer_bottom.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        layout.addWidget(spacer_bottom)
 
         # update icons to match initial state
         self._update_icons()
@@ -497,88 +516,65 @@ class PopupDialog(QDialog):
             self._apply_palette()
         except Exception:
             pass
-        # apply initial scaling
-        try:
-            self._apply_scale()
-        except Exception:
-            pass
 
-    def resizeEvent(self, event):
-        try:
-            self._apply_scale()
-        except Exception:
-            pass
-        super().resizeEvent(event)
+        # Start real-time updater if nodes are provided
+        self.update_timer = None
+        if parent_dialog and enable_tag and reset_tag and delay_tag:
+            self.parent_dialog = parent_dialog
+            self.enable_tag = enable_tag
+            self.reset_tag = reset_tag
+            self.delay_tag = delay_tag
+            # Connect to parent's update signal for real-time updates
+            self.parent_dialog.opcua_client.update_signal.connect(self._on_data_updated_from_signal)
+            self.parent_dialog.opcua_client.write_failed_signal.connect(self._on_write_failed)
+    
+    @pyqtSlot(dict)
+    def _on_data_updated_from_signal(self, updates):
+        """Handle real-time data updates from parent dialog's OPC UA updates."""
+        # Get latest values from parent dialog
+        enable_val = self.parent_dialog.get_latest_value(self.enable_tag)
+        reset_val = self.parent_dialog.get_latest_value(self.reset_tag)
+        delay_val = self.parent_dialog.get_latest_value(self.delay_tag)
+        
+        if enable_val is not None and reset_val is not None and delay_val is not None:
+            self._on_data_updated(bool(enable_val), bool(reset_val), float(delay_val))
 
-    def _apply_scale(self):
-        w = max(1, self.width())
-        scale = w / float(self._base_width)
-        # alarm and reset buttons
-        try:
-            aw = max(32, int(self._base_alarm_btn[0] * scale))
-            ah = max(32, int(self._base_alarm_btn[1] * scale))
-            self.alarm_toggle.setFixedSize(aw, ah)
-            self.alarm_toggle.setIconSize(
-                QSize(
-                    max(16, int((self._base_alarm_btn[0] - 5) * scale)),
-                    max(16, int((self._base_alarm_btn[1] - 5) * scale)),
-                )
-            )
-            rw = max(32, int(self._base_reset_btn[0] * scale))
-            rh = max(32, int(self._base_reset_btn[1] * scale))
-            self.reset_button.setFixedSize(rw, rh)
-            self.reset_button.setIconSize(
-                QSize(
-                    max(16, int(self._base_reset_icon[0] * scale)),
-                    max(16, int(self._base_reset_icon[1] * scale)),
-                )
-            )
-        except Exception:
-            pass
-        # delay edit sizing and font
-        try:
-            dw = max(40, int(self._base_delay_w * scale))
-            dh = max(20, int(self._base_delay_h * scale))
-            self.delay_edit.setFixedWidth(dw)
-            self.delay_edit.setFixedHeight(dh)
-            df = QFont(self.delay_edit.font())
-            df.setPointSize(max(8, int(self._base_delay_font * scale)))
-            self.delay_edit.setFont(df)
-            # suffix label height
-            try:
-                self.lbl_sec.setFixedHeight(self.delay_edit.height())
-                sf = QFont(self.lbl_sec.font())
-                sf.setPointSize(max(8, int(self._base_suffix_font * scale)))
-                self.lbl_sec.setFont(sf)
-            except Exception:
-                pass
-        except Exception:
-            pass
-        # labels
-        try:
-            lf = QFont(self.lbl1.font())
-            lf.setPointSize(max(8, int(self._base_label_font * scale)))
-            self.lbl1.setFont(lf)
-            self.lbl2.setFont(lf)
-            self.lbl3.setFont(lf)
-        except Exception:
-            pass
-        # container widths (adjust the small minimum widths to keep layout balanced)
-        try:
-            if hasattr(self, "_c1"):
-                self._c1.setMinimumWidth(max(120, int(400 * scale)))
-            if hasattr(self, "_c2"):
-                self._c2.setMinimumWidth(max(120, int(400 * scale)))
-            if hasattr(self, "_c3"):
-                self._c3.setMinimumWidth(max(120, int(400 * scale)))
-        except Exception:
-            pass
+    def _on_write_failed(self, tag_name):
+        """Handle write failure by clearing current_values to revert UI."""
+        if tag_name in self.parent_dialog.opcua_client.current_values:
+            del self.parent_dialog.opcua_client.current_values[tag_name]
+        print(f"Write failed for {tag_name}, UI will revert on next read")
 
-    def _on_reset(self):
-        # reset clears alarm and sets selected_state to green
+    def _on_reset_pressed(self):
+        # reset pressed: write True and update UI
+        self.alarm_toggle.toggled.disconnect(self._on_toggle_alarm)
         self.alarm_toggle.setChecked(False)
         self.selected_state = "green"
         self._update_icons()
+        self.alarm_toggle.toggled.connect(self._on_toggle_alarm)
+        
+        # 立即更新本地緩存和發出信號，UI 立刻反應
+        if hasattr(self, 'parent_dialog') and self.parent_dialog and self.parent_dialog.opcua_client and self.reset_tag:
+            try:
+                print(f"Writing reset True to {self.reset_tag}")
+                self.parent_dialog.opcua_client.current_values[self.reset_tag] = True
+                self.parent_dialog.opcua_client.write_timestamps[self.reset_tag] = __import__('time').time()
+                self.parent_dialog.opcua_client.update_signal.emit({self.reset_tag: True})
+                self.parent_dialog.opcua_client.write_value(self.reset_tag, True)
+            except Exception as e:
+                print(f"Error writing reset True: {e}")
+
+    def _on_reset_released(self):
+        # reset released: write False to OPC UA
+        if hasattr(self, 'parent_dialog') and self.parent_dialog and self.parent_dialog.opcua_client and self.reset_tag:
+            try:
+                print(f"Writing reset False to {self.reset_tag}")
+                self.parent_dialog.opcua_client.current_values[self.reset_tag] = False
+                self.parent_dialog.opcua_client.write_timestamps[self.reset_tag] = __import__('time').time()
+                self.parent_dialog.opcua_client.update_signal.emit({self.reset_tag: False})
+                self.parent_dialog.opcua_client.write_value(self.reset_tag, False)
+            except Exception as e:
+                print(f"Error writing reset False: {e}")
 
     def _on_ok(self):
         # determine selected state
@@ -597,10 +593,45 @@ class PopupDialog(QDialog):
             self.alarm_delay = 0.0
         self.accept()
 
+    def _on_data_updated(self, enable_val, reset_val, delay_val):
+        """Handle real-time data updates from OPC UA."""
+        # Temporarily disconnect signals to avoid triggering writes during UI update
+        self.alarm_toggle.toggled.disconnect(self._on_toggle_alarm)
+        try:
+            # Update alarm toggle
+            self.alarm_toggle.setChecked(enable_val)
+            self.selected_state = "red" if enable_val else "green"
+            self._update_icons()
+            
+            # Update delay display
+            self.alarm_delay = delay_val
+            if float(delay_val).is_integer():
+                disp = f"{int(delay_val)}"
+            else:
+                disp = f"{delay_val:.1f}"
+            self.delay_edit.setText(disp)
+        finally:
+            self.alarm_toggle.toggled.connect(self._on_toggle_alarm)
+
     def _on_toggle_alarm(self, checked: bool):
         # update selected_state and icon when toggled
         self.selected_state = "red" if checked else "green"
         self._update_icons()
+        
+        # 立即更新本地緩存和發出信號，UI 立刻反應
+        if hasattr(self, 'parent_dialog') and self.parent_dialog and self.parent_dialog.opcua_client and self.enable_tag:
+            try:
+                print(f"Writing enable {checked} to {self.enable_tag}")
+                # 先更新緩存和時間戳
+                self.parent_dialog.opcua_client.current_values[self.enable_tag] = checked
+                self.parent_dialog.opcua_client.write_timestamps[self.enable_tag] = __import__('time').time()
+                # 發出信號更新 UI
+                self.parent_dialog.opcua_client.update_signal.emit({self.enable_tag: checked})
+                # 然後非同步寫入伺服器
+                self.parent_dialog.opcua_client.write_value(self.enable_tag, checked)
+                print("Write enable done")
+            except Exception as e:
+                print(f"Error writing enable tag: {e}")
 
     def _update_icons(self):
         # load ON/OFF icons and reset icon from img dir
@@ -663,7 +694,6 @@ class PopupDialog(QDialog):
                 "#ffffff" if lum < 96 else pal.color(QPalette.ColorRole.Dark).name()
             )
             try:
-                # keep the thinner border/padding we set earlier
                 self.delay_edit.setStyleSheet(
                     f"border: 1px solid {border_hex}; border-radius:4px; padding:4px; background: {base_hex}; color: {text_hex};"
                 )
@@ -684,6 +714,21 @@ class PopupDialog(QDialog):
             pass
         super().changeEvent(event)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Remove minimize and maximize buttons using Windows API
+        try:
+            hwnd = int(self.winId())
+            # WS_MINIMIZEBOX = 0x00020000, WS_MAXIMIZEBOX = 0x00010000
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, -16)  # GWL_STYLE
+            style &= ~0x00020000  # Remove WS_MINIMIZEBOX
+            style &= ~0x00010000  # Remove WS_MAXIMIZEBOX
+            ctypes.windll.user32.SetWindowLongW(hwnd, -16, style)
+            # Force redraw
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x27)  # SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+        except Exception:
+            pass
+
     def _setup_button(self, button, size, icon_size):
         button.setFixedSize(size)
         button.setIconSize(icon_size)
@@ -691,3 +736,15 @@ class PopupDialog(QDialog):
         button.setStyleSheet("border: none; background: transparent;")
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def closeEvent(self, event):
+        """Handle dialog close event."""
+        if self.update_timer:
+            self.update_timer.stop()
+        # Disconnect from parent's update signal
+        if hasattr(self, 'parent_dialog') and self.parent_dialog and self.parent_dialog.opcua_client:
+            try:
+                self.parent_dialog.opcua_client.update_signal.disconnect(self._on_data_updated_from_signal)
+            except Exception:
+                pass  # Signal might already be disconnected
+        super().closeEvent(event)
