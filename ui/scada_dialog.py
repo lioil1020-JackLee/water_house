@@ -665,6 +665,7 @@ class ScadaDialog(QMainWindow):
         else:
             self.workspace_root = Path(__file__).parent.parent
             self.img_dir = os.path.join(self.workspace_root, 'img')
+        self.setWindowIcon(QIcon(os.path.join(self.img_dir, '享溫泉.ico')))
         self.room_cards = {}  # room_id -> RoomCard
         self._resizing = False  # 防止 resizeEvent 無限循環
         self._last_card_size = 0  # 記錄上次卡片大小
@@ -1336,6 +1337,9 @@ class ScadaDialog(QMainWindow):
         layout_2f.addLayout(rooms_2f)
         main_v.addWidget(floor_2f)
         
+        # 添加彈性空間，讓所有額外的垂直空間都在底部，樓層標籤才能正確對齊
+        main_v.addStretch(1)
+        
         outer_h.addLayout(main_v)
         outer_h.addStretch(1)
         
@@ -1468,11 +1472,14 @@ class ScadaDialog(QMainWindow):
         if card_height <= 0:
             return
         
-        # 左側標籤：覆蓋該樓層的2行房間，底線對齊第2行燈號下緣
-        # 由於使用 AlignBottom，標籤高度設為 2 * card_height 會使底線對齊第2行底部
-        height_2rows = 2 * card_height
+        # 行間距（與 rooms_Xf 的 setSpacing(3) 一致）
+        row_spacing = 3
         
-        # 5F 左側標籤：對齊501客房燈號下緣（2行高度）
+        # 左側標籤：覆蓋該樓層的2行房間，底線對齊第2行燈號下緣
+        # 高度 = 2行卡片高度 + 1個行間距，使底線與第2行底部對齊
+        height_2rows = 2 * card_height + row_spacing
+        
+        # 5F 左側標籤：對齊501客房燈號下緣（2行高度 + 行間距）
         if hasattr(self, 'label_5f') and self.label_5f:
             self.label_5f.setFixedHeight(height_2rows)
         
@@ -1480,11 +1487,11 @@ class ScadaDialog(QMainWindow):
         if hasattr(self, 'label_5f_right') and self.label_5f_right:
             self.label_5f_right.setFixedHeight(card_height)
         
-        # 3F 左側標籤：對齊301客房燈號下緣（2行高度）
+        # 3F 左側標籤：對齊301客房燈號下緣（2行高度 + 行間距）
         if hasattr(self, 'label_3f') and self.label_3f:
             self.label_3f.setFixedHeight(height_2rows)
         
-        # 2F 左側標籤：對齊201客房燈號下緣（2行高度）
+        # 2F 左側標籤：對齊201客房燈號下緣（2行高度 + 行間距）
         if hasattr(self, 'label_2f') and self.label_2f:
             self.label_2f.setFixedHeight(height_2rows)
         

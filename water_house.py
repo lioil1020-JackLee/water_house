@@ -19,7 +19,7 @@ scada_mod = load_from_path('scada_dialog', os.path.join(root, 'ui', 'scada_dialo
 popup_mod = load_from_path('popup_dialog', os.path.join(root, 'ui', 'popup_dialog.py'))
 
 ScadaDialog = scada_mod.ScadaDialog
-PopupDialog = popup_mod.PopupDialog
+PopupDialog = popup_mod.PopupDialog 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
