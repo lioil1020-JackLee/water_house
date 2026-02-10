@@ -1,4 +1,5 @@
 import os
+import sys
 import importlib.util
 from pathlib import Path
 import csv
@@ -652,12 +653,15 @@ class ScadaDialog(QMainWindow):
         self.setWindowTitle('北投享溫泉 保全壓扣系統 by lioil')
         
         if hasattr(sys, '_MEIPASS'):
-            self.workspace_root = Path(sys._MEIPASS)
+            meipass = Path(sys._MEIPASS)
+            if '_internal' in str(meipass):
+                self.workspace_root = meipass.parent
+            else:
+                self.workspace_root = meipass
             self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
         else:
             self.workspace_root = Path(__file__).parent.parent
             self.img_dir = os.path.join(self.workspace_root, 'img')
-        self.setWindowIcon(QIcon(os.path.join(self.img_dir, '享溫泉.ico')))
         self.room_cards = {}  # room_id -> RoomCard
         self._resizing = False  # 防止 resizeEvent 無限循環
         self._last_card_size = 0  # 記錄上次卡片大小

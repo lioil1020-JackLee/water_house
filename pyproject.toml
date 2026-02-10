@@ -6,4 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pyinstaller>=6.18.0",
+    "pyqt6",
+    "asyncua",
+    "pyqt6-qt6>=6.10.2",
 ]

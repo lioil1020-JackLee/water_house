@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 import ctypes
 from PyQt6.QtWidgets import (
@@ -27,7 +28,11 @@ class NumpadDialog(QDialog):
         self.setModal(True)
         self.setWindowTitle("數字鍵盤")
         if hasattr(sys, '_MEIPASS'):
-            self.workspace_root = Path(sys._MEIPASS)
+            meipass = Path(sys._MEIPASS)
+            if '_internal' in str(meipass):
+                self.workspace_root = meipass.parent
+            else:
+                self.workspace_root = meipass
             self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
         else:
             self.workspace_root = Path(__file__).parent.parent
@@ -272,7 +277,11 @@ class PopupDialog(QDialog):
         super().__init__()
         self.setWindowTitle(title)
         if hasattr(sys, '_MEIPASS'):
-            self.workspace_root = Path(sys._MEIPASS)
+            meipass = Path(sys._MEIPASS)
+            if '_internal' in str(meipass):
+                self.workspace_root = meipass.parent
+            else:
+                self.workspace_root = meipass
             self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
         else:
             self.workspace_root = Path(__file__).parent.parent
