@@ -1157,29 +1157,29 @@ class ScadaDialog(QMainWindow):
         main_v.setSpacing(3)  # 樓層間距與行間距一致
         
         # ===== 5F =====
+        # 使用 QGridLayout 確保左側標籤能跨兩行對齊底線，右側標籤定位於第二行
         floor_5f = QWidget()
-        layout_5f = QHBoxLayout(floor_5f)
-        layout_5f.setContentsMargins(0, 0, 0, 0)
-        layout_5f.setSpacing(0)
-        
-        # 5F 左標籤（動態高度，初始設定為0）
+        grid_5f = QGridLayout(floor_5f)
+        grid_5f.setContentsMargins(0, 0, 0, 0)
+        grid_5f.setSpacing(0)
+
+        # 5F 左標籤（跨兩行）
         label_5f = FloorLabel('5F', 80, align_right=True)
-        self.label_5f = label_5f  # 保存引用以供後續調整
-        layout_5f.addWidget(label_5f, alignment=Qt.AlignmentFlag.AlignBottom)
-        
+        self.label_5f = label_5f
+        grid_5f.addWidget(label_5f, 0, 0, 2, 1, alignment=Qt.AlignmentFlag.AlignBottom)
+
         # 5F 房間（2行）
-        rooms_5f = QVBoxLayout()
-        rooms_5f.setContentsMargins(0, 0, 0, 0)
-        rooms_5f.setSpacing(3)  # 行間距與水平間距一致
-        
-        # 5F 第1行：包含空位
+        rooms_5f_v = QVBoxLayout()
+        rooms_5f_v.setContentsMargins(0, 0, 0, 0)
+        rooms_5f_v.setSpacing(3)
+
+        # 第1行：包含空位
         row1_5f = QHBoxLayout()
         row1_5f.setContentsMargins(0, 0, 0, 0)
         row1_5f.setSpacing(3)
-        self._spacers_5f_row1 = []  # 保存空位引用
+        self._spacers_5f_row1 = []
         for item in ROOMS_DATA['5F']['row1']:
             if item is None:
-                # 空位
                 spacer = QWidget()
                 spacer.setFixedSize(90, 90)
                 spacer.setObjectName('room_spacer_5f_row1')
@@ -1191,9 +1191,9 @@ class ScadaDialog(QMainWindow):
                 row1_5f.addWidget(card)
                 self.room_cards[room_id] = card
         row1_5f.addStretch(1)
-        rooms_5f.addLayout(row1_5f)
-        
-        # 5F 第2行：6張卡片 + 公共設施
+        rooms_5f_v.addLayout(row1_5f)
+
+        # 第2行：6張卡片 + 公共設施
         row2_5f = QHBoxLayout()
         row2_5f.setContentsMargins(0, 0, 0, 0)
         row2_5f.setSpacing(3)
@@ -1201,54 +1201,52 @@ class ScadaDialog(QMainWindow):
             card = RoomCard(room_id, room_type, self.img_dir, floor='5F', parent=self)
             row2_5f.addWidget(card)
             self.room_cards[room_id] = card
-        
-        # 間隙
+
         spacer = QWidget()
         spacer.setFixedWidth(100)
         spacer.setObjectName('spacer_5f_public')
         row2_5f.addWidget(spacer)
-        
-        # 公共設施
+
         for room_id, room_type in ROOMS_DATA['5F']['public']:
             card = RoomCard(room_id, room_type, self.img_dir, is_public=True, floor='5F', parent=self)
             row2_5f.addWidget(card)
             self.room_cards[f'public_5f_{room_id}'] = card
-        
-        # 右側 5F 標籤
+
+        # 右側 5F 標籤（只對齊第2行）
         label_5f_right = FloorLabel('5F', 90, align_right=False)
-        self.label_5f_right = label_5f_right  # 保存引用
+        self.label_5f_right = label_5f_right
+
         row2_5f.addWidget(label_5f_right, alignment=Qt.AlignmentFlag.AlignBottom)
         row2_5f.addStretch(1)
-        
-        rooms_5f.addLayout(row2_5f)
-        
-        layout_5f.addLayout(rooms_5f)
+
+        rooms_5f_v.addLayout(row2_5f)
+
+        grid_5f.addLayout(rooms_5f_v, 0, 1, 2, 1)
         main_v.addWidget(floor_5f)
         
         # ===== 3F =====
+        # 使用 QGridLayout，左側標籤跨兩行對齊底線
         floor_3f = QWidget()
-        layout_3f = QHBoxLayout(floor_3f)
-        layout_3f.setContentsMargins(0, 0, 0, 0)
-        layout_3f.setSpacing(0)
-        
-        # 3F 左標籤
+        grid_3f = QGridLayout(floor_3f)
+        grid_3f.setContentsMargins(0, 0, 0, 0)
+        grid_3f.setSpacing(0)
+
+        # 3F 左標籤（跨兩行）
         label_3f = FloorLabel('3F', 80, align_right=True)
-        self.label_3f = label_3f  # 保存引用
-        layout_3f.addWidget(label_3f, alignment=Qt.AlignmentFlag.AlignBottom)
-        
-        # 3F 房間
-        rooms_3f = QVBoxLayout()
-        rooms_3f.setContentsMargins(0, 0, 0, 0)
-        rooms_3f.setSpacing(3)  # 行間距與水平間距一致
-        
-        # 3F 第1行：包含空位
+        self.label_3f = label_3f
+        grid_3f.addWidget(label_3f, 0, 0, 2, 1, alignment=Qt.AlignmentFlag.AlignBottom)
+
+        # 3F 房間（2行）
+        rooms_3f_v = QVBoxLayout()
+        rooms_3f_v.setContentsMargins(0, 0, 0, 0)
+        rooms_3f_v.setSpacing(3)
+
         row1_3f = QHBoxLayout()
         row1_3f.setContentsMargins(0, 0, 0, 0)
         row1_3f.setSpacing(3)
-        self._spacers_3f_row1 = []  # 保存空位引用
+        self._spacers_3f_row1 = []
         for item in ROOMS_DATA['3F']['row1']:
             if item is None:
-                # 空位
                 spacer = QWidget()
                 spacer.setFixedSize(90, 90)
                 spacer.setObjectName('room_spacer_3f_row1')
@@ -1260,9 +1258,8 @@ class ScadaDialog(QMainWindow):
                 row1_3f.addWidget(card)
                 self.room_cards[room_id] = card
         row1_3f.addStretch(1)
-        rooms_3f.addLayout(row1_3f)
-        
-        # 3F 第2行：6張卡片
+        rooms_3f_v.addLayout(row1_3f)
+
         row2_3f = QHBoxLayout()
         row2_3f.setContentsMargins(0, 0, 0, 0)
         row2_3f.setSpacing(3)
@@ -1271,28 +1268,29 @@ class ScadaDialog(QMainWindow):
             row2_3f.addWidget(card)
             self.room_cards[room_id] = card
         row2_3f.addStretch(1)
-        rooms_3f.addLayout(row2_3f)
-        
-        layout_3f.addLayout(rooms_3f)
+        rooms_3f_v.addLayout(row2_3f)
+
+        grid_3f.addLayout(rooms_3f_v, 0, 1, 2, 1)
         main_v.addWidget(floor_3f)
         
         # ===== 2F & 1F =====
+        # 使用 QGridLayout，左側 2F 標籤跨兩行，1F 標籤位於第二行右側
         floor_2f = QWidget()
-        layout_2f = QHBoxLayout(floor_2f)
-        layout_2f.setContentsMargins(0, 0, 0, 0)
-        layout_2f.setSpacing(0)
-        
-        # 2F 左標籤
+        grid_2f = QGridLayout(floor_2f)
+        grid_2f.setContentsMargins(0, 0, 0, 0)
+        grid_2f.setSpacing(0)
+
+        # 2F 左標籤（跨兩行）
         label_2f = FloorLabel('2F', 80, align_right=True)
-        self.label_2f = label_2f  # 保存引用
-        layout_2f.addWidget(label_2f, alignment=Qt.AlignmentFlag.AlignBottom)
-        
-        # 2F 房間
-        rooms_2f = QVBoxLayout()
-        rooms_2f.setContentsMargins(0, 0, 0, 0)
-        rooms_2f.setSpacing(3)  # 行間距與水平間距一致
-        
-        # 2F 第1行
+        self.label_2f = label_2f
+        grid_2f.addWidget(label_2f, 0, 0, 2, 1, alignment=Qt.AlignmentFlag.AlignBottom)
+
+        # 2F 房間（2行）
+        rooms_2f_v = QVBoxLayout()
+        rooms_2f_v.setContentsMargins(0, 0, 0, 0)
+        rooms_2f_v.setSpacing(3)
+
+        # 第1行
         row1_2f = QHBoxLayout()
         row1_2f.setContentsMargins(0, 0, 0, 0)
         row1_2f.setSpacing(3)
@@ -1301,9 +1299,9 @@ class ScadaDialog(QMainWindow):
             row1_2f.addWidget(card)
             self.room_cards[room_id] = card
         row1_2f.addStretch(1)
-        rooms_2f.addLayout(row1_2f)
-        
-        # 2F 第2行：6張卡片（左側客房）+ 公共設施
+        rooms_2f_v.addLayout(row1_2f)
+
+        # 第2行：左側客房 + 公共設施 (1F 顯示區)
         row2_2f = QHBoxLayout()
         row2_2f.setContentsMargins(0, 0, 0, 0)
         row2_2f.setSpacing(3)
@@ -1311,29 +1309,26 @@ class ScadaDialog(QMainWindow):
             card = RoomCard(room_id, room_type, self.img_dir, floor='2F', parent=self)
             row2_2f.addWidget(card)
             self.room_cards[room_id] = card
-        
-        # 間隙
+
         spacer = QWidget()
         spacer.setFixedWidth(100)
         spacer.setObjectName('spacer_2f_public')
         row2_2f.addWidget(spacer)
-        
-        # 1F 公共設施（顯示在2F區域右下角，UI佈局設計如此）
+
         for room_id, room_type in ROOMS_DATA['2F']['1f_public']:
-            # 注意：floor設為'1F'，佈局在2F區域，room_key為public_2f_X
             card = RoomCard(room_id, room_type, self.img_dir, is_public=True, floor='1F', parent=self)
             row2_2f.addWidget(card)
             self.room_cards[f'public_2f_{room_id}'] = card
-        
-        # 1F 樓層標籤（顯示在公共設施旁）
+
+        # 1F 樓層標籤（顯示在公共設施旁，對齊第2行）
         label_1f = FloorLabel('1F', 90, align_right=False)
-        self.label_1f = label_1f  # 保存引用
+        self.label_1f = label_1f
         row2_2f.addWidget(label_1f, alignment=Qt.AlignmentFlag.AlignBottom)
         row2_2f.addStretch(1)
-        
-        rooms_2f.addLayout(row2_2f)
-        
-        layout_2f.addLayout(rooms_2f)
+
+        rooms_2f_v.addLayout(row2_2f)
+
+        grid_2f.addLayout(rooms_2f_v, 0, 1, 2, 1)
         main_v.addWidget(floor_2f)
         
         outer_h.addLayout(main_v)
