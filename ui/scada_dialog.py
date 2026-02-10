@@ -1077,7 +1077,7 @@ class ScadaDialog(QMainWindow):
     def changeEvent(self, event):
         """處理視窗狀態變化事件：最小化時隱藏到系統列，處理還原按鈕和主題變化。"""
         # Window state change
-        if event.type() == QEvent.Type.WindowStateChange:
+        if hasattr(QEvent.Type, 'WindowStateChange') and event.type() == QEvent.Type.WindowStateChange:
             # 檢查是否最小化 → 隱藏到系統列
             if self.windowState() & Qt.WindowState.WindowMinimized:
                 self.hide()
