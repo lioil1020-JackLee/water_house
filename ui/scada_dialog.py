@@ -1382,7 +1382,7 @@ class ScadaDialog(QMainWindow):
         H_MARGINS = 20     # 左右邊距
         V_MARGINS = 18     # 上下邊距 (10 + 8)
         SPACING = 3        # 卡片間距
-        MAX_CARDS_H = 9    # 水平最大卡片數
+        MAX_CARDS_H = 6    # 水平最大卡片數（改為6以恢復原始卡片大小）
         TOTAL_ROWS = 6     # 垂直總行數
         FLOOR_GAPS = 2     # 樓層之間的間隙數量
         ROW_GAPS = 3       # 每層樓內的行間距數量
