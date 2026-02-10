@@ -31,9 +31,10 @@ class NumpadDialog(QDialog):
             meipass = Path(sys._MEIPASS)
             if '_internal' in str(meipass):
                 self.workspace_root = meipass.parent
+                self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
             else:
                 self.workspace_root = meipass
-            self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
+                self.img_dir = os.path.join(self.workspace_root, 'img')
         else:
             self.workspace_root = Path(__file__).parent.parent
             self.img_dir = os.path.join(self.workspace_root, 'img')
@@ -280,9 +281,10 @@ class PopupDialog(QDialog):
             meipass = Path(sys._MEIPASS)
             if '_internal' in str(meipass):
                 self.workspace_root = meipass.parent
+                self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
             else:
                 self.workspace_root = meipass
-            self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
+                self.img_dir = os.path.join(self.workspace_root, 'img')
         else:
             self.workspace_root = Path(__file__).parent.parent
             self.img_dir = os.path.join(self.workspace_root, 'img')

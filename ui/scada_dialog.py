@@ -5,6 +5,8 @@ from pathlib import Path
 import csv
 import threading
 import asyncio
+import tempfile
+import shutil
 from asyncua import Client, ua
 from datetime import datetime
 from PyQt6.QtWidgets import (
@@ -656,9 +658,10 @@ class ScadaDialog(QMainWindow):
             meipass = Path(sys._MEIPASS)
             if '_internal' in str(meipass):
                 self.workspace_root = meipass.parent
+                self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
             else:
                 self.workspace_root = meipass
-            self.img_dir = os.path.join(self.workspace_root, '_internal', 'img')
+                self.img_dir = os.path.join(self.workspace_root, 'img')
         else:
             self.workspace_root = Path(__file__).parent.parent
             self.img_dir = os.path.join(self.workspace_root, 'img')
@@ -773,7 +776,10 @@ class ScadaDialog(QMainWindow):
     def _load_opcua_tags(self):
         """Load OPC UA tags from CSV file."""
         tags = []
-        csv_path = self.workspace_root / '_internal' / 'OPC UA tag.csv'
+        if hasattr(sys, '_MEIPASS'):
+            csv_path = Path(sys._MEIPASS) / 'opc_tags.csv' / 'OPC UA tag.csv'
+        else:
+            csv_path = self.workspace_root / 'OPC UA tag.csv'
         try:
             with open(csv_path, 'r', encoding='utf-8-sig') as f:  # utf-8-sig handles BOM
                 reader = csv.DictReader(f)
