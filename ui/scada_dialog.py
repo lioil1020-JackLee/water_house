@@ -1357,7 +1357,9 @@ class ScadaDialog(QMainWindow):
     def _initial_scale(self):
         """初始化時執行一次縮放。"""
         self._last_card_size = 0  # 重置以強制縮放
-        self._do_scale()
+        # 延遲執行以確保視窗/佈局完成後再縮放（處理 Snap/分割情況）
+        QTimer.singleShot(50, self._do_scale)
+        QTimer.singleShot(300, self._do_scale)
     
     def resizeEvent(self, event):
         """視窗大小改變時重新縮放卡片。"""
@@ -1366,9 +1368,15 @@ class ScadaDialog(QMainWindow):
         # 防止無限循環
         if self._resizing:
             return
-        
-        # 執行縮放
-        self._do_scale()
+        # 延遲執行縮放，確保 layout 已更新（解決 Windows Snap 時未正確應用佈局問題）
+        QTimer.singleShot(50, self._do_scale)
+        QTimer.singleShot(200, self._do_scale)
+
+    def showEvent(self, event):
+        """視窗顯示時觸發一次縮放，處理 Snap/分割後的初始排列。"""
+        super().showEvent(event)
+        QTimer.singleShot(50, self._do_scale)
+        QTimer.singleShot(300, self._do_scale)
     
     def _do_scale(self):
         """執行卡片縮放邏輯。"""
