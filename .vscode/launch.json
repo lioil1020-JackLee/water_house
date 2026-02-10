@@ -1,0 +1,13 @@
+{
+    "version": "0.2.1",
+    "configurations": [
+        {
+            "name": "Run water_house",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/water_house.py",
+            "console": "integratedTerminal",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe"
+        }
+    ]
+}
