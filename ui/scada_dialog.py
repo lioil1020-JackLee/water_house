@@ -1045,6 +1045,12 @@ class ScadaDialog(QMainWindow):
             icon_path = os.path.join(self.img_dir, '享溫泉.ico')
             if os.path.exists(icon_path):
                 self.tray_icon.setIcon(QIcon(icon_path))
+            else:
+                # 如果沒有自定義圖標，使用應用圖標
+                self.tray_icon.setIcon(self.windowIcon())
+            
+            # 設置工具提示
+            self.tray_icon.setToolTip("water_house")
             
             # 創建托盤菜單
             tray_menu = QMenu(self)
@@ -1068,7 +1074,8 @@ class ScadaDialog(QMainWindow):
             
             # 顯示托盤圖標
             self.tray_icon.show()
-            print("[UI] 系統列托盤已初始化")
+            print(f"[UI] 系統列托盤已初始化，圖標路徑: {icon_path}，圖標是否存在: {os.path.exists(icon_path)}")
+            print(f"[UI] 托盤圖標是否可見: {self.tray_icon.isVisible()}")
         except Exception as e:
             print(f"[UI 警告] 無法初始化系統列托盤: {e}")
     
@@ -1096,6 +1103,9 @@ class ScadaDialog(QMainWindow):
             # 檢查是否最小化 → 隱藏到系統列
             if self.windowState() & Qt.WindowState.WindowMinimized:
                 self.hide()
+                # 確保系統托盤圖標可見
+                if hasattr(self, 'tray_icon') and self.tray_icon:
+                    self.tray_icon.show()
                 self.tray_icon.showMessage("北投享溫泉", "應用已最小化到系統列", QSystemTrayIcon.MessageIcon.Information, 2000)
                 event.ignore()
                 return
@@ -1162,17 +1172,17 @@ class ScadaDialog(QMainWindow):
         layout_5f = QHBoxLayout(floor_5f)
         layout_5f.setContentsMargins(0, 0, 0, 0)
         layout_5f.setSpacing(0)
-        
+
         # 5F 左標籤（動態高度，初始設定為0）
         label_5f = FloorLabel('5F', 80, align_right=True)
         self.label_5f = label_5f  # 保存引用以供後續調整
         layout_5f.addWidget(label_5f, alignment=Qt.AlignmentFlag.AlignBottom)
-        
+
         # 5F 房間（2行）
         rooms_5f = QVBoxLayout()
         rooms_5f.setContentsMargins(0, 0, 0, 0)
         rooms_5f.setSpacing(3)  # 行間距與水平間距一致
-        
+
         # 5F 第1行：包含空位
         row1_5f = QHBoxLayout()
         row1_5f.setContentsMargins(0, 0, 0, 0)
@@ -1193,7 +1203,7 @@ class ScadaDialog(QMainWindow):
                 self.room_cards[room_id] = card
         row1_5f.addStretch(1)
         rooms_5f.addLayout(row1_5f)
-        
+
         # 5F 第2行：6張卡片 + 公共設施
         row2_5f = QHBoxLayout()
         row2_5f.setContentsMargins(0, 0, 0, 0)
@@ -1202,27 +1212,27 @@ class ScadaDialog(QMainWindow):
             card = RoomCard(room_id, room_type, self.img_dir, floor='5F', parent=self)
             row2_5f.addWidget(card)
             self.room_cards[room_id] = card
-        
+
         # 間隙
         spacer = QWidget()
         spacer.setFixedWidth(100)
         spacer.setObjectName('spacer_5f_public')
         row2_5f.addWidget(spacer)
-        
+
         # 公共設施
         for room_id, room_type in ROOMS_DATA['5F']['public']:
             card = RoomCard(room_id, room_type, self.img_dir, is_public=True, floor='5F', parent=self)
             row2_5f.addWidget(card)
             self.room_cards[f'public_5f_{room_id}'] = card
-        
+
         # 右側 5F 標籤
         label_5f_right = FloorLabel('5F', 90, align_right=False)
         self.label_5f_right = label_5f_right  # 保存引用
         row2_5f.addWidget(label_5f_right, alignment=Qt.AlignmentFlag.AlignBottom)
         row2_5f.addStretch(1)
-        
+
         rooms_5f.addLayout(row2_5f)
-        
+
         layout_5f.addLayout(rooms_5f)
         main_v.addWidget(floor_5f)
         
@@ -1231,17 +1241,17 @@ class ScadaDialog(QMainWindow):
         layout_3f = QHBoxLayout(floor_3f)
         layout_3f.setContentsMargins(0, 0, 0, 0)
         layout_3f.setSpacing(0)
-        
+
         # 3F 左標籤
         label_3f = FloorLabel('3F', 80, align_right=True)
         self.label_3f = label_3f  # 保存引用
         layout_3f.addWidget(label_3f, alignment=Qt.AlignmentFlag.AlignBottom)
-        
+
         # 3F 房間
         rooms_3f = QVBoxLayout()
         rooms_3f.setContentsMargins(0, 0, 0, 0)
         rooms_3f.setSpacing(3)  # 行間距與水平間距一致
-        
+
         # 3F 第1行：包含空位
         row1_3f = QHBoxLayout()
         row1_3f.setContentsMargins(0, 0, 0, 0)
@@ -1262,7 +1272,7 @@ class ScadaDialog(QMainWindow):
                 self.room_cards[room_id] = card
         row1_3f.addStretch(1)
         rooms_3f.addLayout(row1_3f)
-        
+
         # 3F 第2行：6張卡片
         row2_3f = QHBoxLayout()
         row2_3f.setContentsMargins(0, 0, 0, 0)
@@ -1273,7 +1283,7 @@ class ScadaDialog(QMainWindow):
             self.room_cards[room_id] = card
         row2_3f.addStretch(1)
         rooms_3f.addLayout(row2_3f)
-        
+
         layout_3f.addLayout(rooms_3f)
         main_v.addWidget(floor_3f)
         
@@ -1282,17 +1292,17 @@ class ScadaDialog(QMainWindow):
         layout_2f = QHBoxLayout(floor_2f)
         layout_2f.setContentsMargins(0, 0, 0, 0)
         layout_2f.setSpacing(0)
-        
+
         # 2F 左標籤
         label_2f = FloorLabel('2F', 80, align_right=True)
         self.label_2f = label_2f  # 保存引用
         layout_2f.addWidget(label_2f, alignment=Qt.AlignmentFlag.AlignBottom)
-        
+
         # 2F 房間
         rooms_2f = QVBoxLayout()
         rooms_2f.setContentsMargins(0, 0, 0, 0)
         rooms_2f.setSpacing(3)  # 行間距與水平間距一致
-        
+
         # 2F 第1行
         row1_2f = QHBoxLayout()
         row1_2f.setContentsMargins(0, 0, 0, 0)
@@ -1303,7 +1313,7 @@ class ScadaDialog(QMainWindow):
             self.room_cards[room_id] = card
         row1_2f.addStretch(1)
         rooms_2f.addLayout(row1_2f)
-        
+
         # 2F 第2行：6張卡片（左側客房）+ 公共設施
         row2_2f = QHBoxLayout()
         row2_2f.setContentsMargins(0, 0, 0, 0)
@@ -1312,28 +1322,28 @@ class ScadaDialog(QMainWindow):
             card = RoomCard(room_id, room_type, self.img_dir, floor='2F', parent=self)
             row2_2f.addWidget(card)
             self.room_cards[room_id] = card
-        
+
         # 間隙
         spacer = QWidget()
         spacer.setFixedWidth(100)
         spacer.setObjectName('spacer_2f_public')
         row2_2f.addWidget(spacer)
-        
+
         # 1F 公共設施（顯示在2F區域右下角，UI佈局設計如此）
         for room_id, room_type in ROOMS_DATA['2F']['1f_public']:
             # 注意：floor設為'1F'，佈局在2F區域，room_key為public_2f_X
             card = RoomCard(room_id, room_type, self.img_dir, is_public=True, floor='1F', parent=self)
             row2_2f.addWidget(card)
             self.room_cards[f'public_2f_{room_id}'] = card
-        
+
         # 1F 樓層標籤（顯示在公共設施旁）
         label_1f = FloorLabel('1F', 90, align_right=False)
         self.label_1f = label_1f  # 保存引用
         row2_2f.addWidget(label_1f, alignment=Qt.AlignmentFlag.AlignBottom)
         row2_2f.addStretch(1)
-        
+
         rooms_2f.addLayout(row2_2f)
-        
+
         layout_2f.addLayout(rooms_2f)
         main_v.addWidget(floor_2f)
         
@@ -1361,7 +1371,9 @@ class ScadaDialog(QMainWindow):
     def _initial_scale(self):
         """初始化時執行一次縮放。"""
         self._last_card_size = 0  # 重置以強制縮放
-        self._do_scale()
+        # 延遲執行以確保視窗/佈局完成後再縮放（處理 Snap/分割情況）
+        QTimer.singleShot(50, self._do_scale)
+        QTimer.singleShot(300, self._do_scale)
     
     def resizeEvent(self, event):
         """視窗大小改變時重新縮放卡片。"""
@@ -1370,9 +1382,15 @@ class ScadaDialog(QMainWindow):
         # 防止無限循環
         if self._resizing:
             return
-        
-        # 執行縮放
-        self._do_scale()
+        # 延遲執行縮放，確保 layout 已更新（解決 Windows Snap 時未正確應用佈局問題）
+        QTimer.singleShot(50, self._do_scale)
+        QTimer.singleShot(200, self._do_scale)
+
+    def showEvent(self, event):
+        """視窗顯示時觸發一次縮放，處理 Snap/分割後的初始排列。"""
+        super().showEvent(event)
+        QTimer.singleShot(50, self._do_scale)
+        QTimer.singleShot(300, self._do_scale)
     
     def _do_scale(self):
         """執行卡片縮放邏輯。"""
@@ -1391,7 +1409,7 @@ class ScadaDialog(QMainWindow):
         H_MARGINS = 20     # 左右邊距
         V_MARGINS = 18     # 上下邊距 (10 + 8)
         SPACING = 3        # 卡片間距
-        MAX_CARDS_H = 9    # 水平最大卡片數
+        MAX_CARDS_H = 6    # 水平最大卡片數（改為6以恢復原始卡片大小）
         TOTAL_ROWS = 6     # 垂直總行數
         FLOOR_GAPS = 2     # 樓層之間的間隙數量
         ROW_GAPS = 3       # 每層樓內的行間距數量
