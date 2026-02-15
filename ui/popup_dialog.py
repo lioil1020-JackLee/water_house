@@ -20,7 +20,51 @@ import asyncio
 from asyncua import Client
 
 
-class NumpadDialog(QDialog):
+class BaseDialog(QDialog):
+    """Base dialog class with common functionality."""
+
+    def _remove_help_button(self):
+        try:
+            self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        except Exception:
+            try:
+                from PyQt6.QtCore import Qt as _Qt
+
+                self.setWindowFlags(
+                    self.windowFlags() & ~_Qt.WindowContextHelpButtonHint
+                )
+            except Exception:
+                pass
+
+    def changeEvent(self, event):
+        # respond to system/application palette changes (e.g., theme switch)
+        try:
+            if event.type() == QEvent.Type.ApplicationPaletteChange:
+                try:
+                    self._apply_palette()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        super().changeEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Remove minimize and maximize buttons using Windows API
+        try:
+            hwnd = int(self.winId())
+            # WS_MINIMIZEBOX = 0x00020000, WS_MAXIMIZEBOX = 0x00010000
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, -16)  # GWL_STYLE
+            style &= ~0x00020000  # Remove WS_MINIMIZEBOX
+            style &= ~0x00010000  # Remove WS_MAXIMIZEBOX
+            ctypes.windll.user32.SetWindowLongW(hwnd, -16, style)
+            # Force redraw
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x27)  # SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+        except Exception:
+            pass
+
+
+class NumpadDialog(BaseDialog):
     """Simple numpad dialog returning a numeric string."""
 
     def __init__(self, parent=None, initial: str = "0"):
@@ -195,27 +239,6 @@ class NumpadDialog(QDialog):
         except Exception:
             pass
 
-    def changeEvent(self, event):
-        if event.type() == QEvent.Type.ApplicationPaletteChange:
-            try:
-                self._apply_palette()
-            except:
-                pass
-        super().changeEvent(event)
-
-    def _remove_help_button(self):
-        try:
-            self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-        except Exception:
-            try:
-                from PyQt6.QtCore import Qt as _Qt
-
-                self.setWindowFlags(
-                    self.windowFlags() & ~_Qt.WindowContextHelpButtonHint
-                )
-            except Exception:
-                pass
-
     def _on_btn(self, t: str):
         if t == "←":
             txt = self.display.text()
@@ -247,23 +270,8 @@ class NumpadDialog(QDialog):
     def get_value(self) -> str:
         return self.display.text()
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        # Remove minimize and maximize buttons using Windows API
-        try:
-            hwnd = int(self.winId())
-            # WS_MINIMIZEBOX = 0x00020000, WS_MAXIMIZEBOX = 0x00010000
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, -16)  # GWL_STYLE
-            style &= ~0x00020000  # Remove WS_MINIMIZEBOX
-            style &= ~0x00010000  # Remove WS_MAXIMIZEBOX
-            ctypes.windll.user32.SetWindowLongW(hwnd, -16, style)
-            # Force redraw
-            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x27)  # SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
-        except Exception:
-            pass
 
-
-class PopupDialog(QDialog):
+class PopupDialog(BaseDialog):
     def __init__(
         self,
         title: str = "Alert Popup",
@@ -685,19 +693,6 @@ class PopupDialog(QDialog):
         except Exception:
             pass
 
-    def _remove_help_button(self):
-        try:
-            self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-        except Exception:
-            try:
-                from PyQt6.QtCore import Qt as _Qt
-
-                self.setWindowFlags(
-                    self.windowFlags() & ~_Qt.WindowContextHelpButtonHint
-                )
-            except Exception:
-                pass
-
     def _apply_palette(self):
         app = QApplication.instance()
         if not app:
@@ -718,33 +713,6 @@ class PopupDialog(QDialog):
                 )
             except Exception:
                 pass
-        except Exception:
-            pass
-
-    def changeEvent(self, event):
-        # respond to system/application palette changes (e.g., theme switch)
-        try:
-            if event.type() == QEvent.Type.ApplicationPaletteChange:
-                try:
-                    self._apply_palette()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        super().changeEvent(event)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        # Remove minimize and maximize buttons using Windows API
-        try:
-            hwnd = int(self.winId())
-            # WS_MINIMIZEBOX = 0x00020000, WS_MAXIMIZEBOX = 0x00010000
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, -16)  # GWL_STYLE
-            style &= ~0x00020000  # Remove WS_MINIMIZEBOX
-            style &= ~0x00010000  # Remove WS_MAXIMIZEBOX
-            ctypes.windll.user32.SetWindowLongW(hwnd, -16, style)
-            # Force redraw
-            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x27)  # SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
         except Exception:
             pass
 

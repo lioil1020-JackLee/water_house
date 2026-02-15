@@ -1013,28 +1013,6 @@ class ScadaDialog(QMainWindow):
             # Wait a bit for nodes to be loaded
             QTimer.singleShot(1000, self._get_opcua_nodes)
     
-    def closeEvent(self, event):
-        """Handle window close event - ensure complete shutdown."""
-        print("[UI] 關閉視窗，清理資源...")
-        
-        # 停止 OPC UA 客戶端線程
-        if self.opcua_client:
-            self.opcua_client.stop()
-            # 等待線程完全停止（最多等 5 秒）
-            if not self.opcua_client.wait(5000):
-                print("[UI 警告] OPC UA 線程未能在 5 秒內停止，強制終止...")
-                self.opcua_client.terminate()
-                self.opcua_client.wait()
-        
-        # 接受關閉事件
-        event.accept()
-        print("[UI] 視窗已關閉，應用即將退出")
-        
-        # 強制退出應用（確保沒有其他線程在背景執行）
-        import sys
-        import os
-        sys.exit(0)
-    
     def _setup_system_tray(self):
         """設置系統列托盤圖標和功能。"""
         try:
