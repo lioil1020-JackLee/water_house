@@ -10,3 +10,7 @@ dependencies = [
     "asyncua",
     "pyqt6-qt6>=6.10.2",
 ]
+
+[tool.setuptools]
+py-modules = ["water_house"]
+packages = ["ui"]
