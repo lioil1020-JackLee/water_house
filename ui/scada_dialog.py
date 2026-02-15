@@ -652,7 +652,7 @@ class ScadaDialog(QMainWindow):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('北投享溫泉 保全壓扣系統 by lioil')
+        self.setWindowTitle('北投享溫泉 保全壓扣系統 by JackLee')
         
         if hasattr(sys, '_MEIPASS'):
             meipass = Path(sys._MEIPASS)
