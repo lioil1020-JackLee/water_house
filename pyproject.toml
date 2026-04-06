@@ -1,16 +1,24 @@
 [project]
 name = "water-house"
 version = "0.1.0"
-description = "Add your description here"
+description = "Water House SCADA desktop application"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "pyinstaller>=6.18.0",
-    "pyqt6",
     "asyncua",
+    "pyqt6",
     "pyqt6-qt6>=6.10.2",
 ]
 
-[tool.setuptools]
-py-modules = ["water_house"]
-packages = ["ui"]
+[dependency-groups]
+build = [
+    "pyinstaller>=6.18.0",
+]
+dev = [
+    "black>=25.1.0",
+    "flake8>=7.3.0",
+    "mypy>=1.18.2",
+]
+
+[tool.uv]
+package = false

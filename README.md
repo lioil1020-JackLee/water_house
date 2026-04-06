@@ -1,187 +1,111 @@
 # Water House SCADA System
 
-一個基於 PyQt6 和 OPC UA 的飯店保全壓扣監控系統，提供即時警報監控和重置功能。
+以 PyQt6 與 OPC UA 為基礎的桌面 SCADA 應用程式，用於監看水處理相關設備狀態、顯示警報與提供視覺化操作介面。
 
-## 功能特點
+## 專案分析
 
-### 核心功能
-- **即時監控**: 通過 OPC UA 協議連接到保全控制系統，實時讀取壓扣狀態和警報數據
-- **警報管理**: 監控各種保全壓扣警報系統，包括：
-  - 公共澡堂壓扣警報系統
-  - 殘障廁所警報系統
-  - 客房警報系統
-- **警報重置**: 支持遠程重置警報狀態
-- **數據寫入**: 支持遠程控制和參數調整
-- **用戶介面**: 直觀的圖形化介面，支持觸控操作
+目前專案是一個單一入口的桌面應用：
 
-### 技術特點
-- **跨平台支援**: 基於 PyQt6，支持 Windows、Linux 和 macOS
-- **主題適配**: 自動檢測系統主題（淺色/深色模式），提供舒適的視覺體驗
-- **音效提示**: 集成音效檔案，提供操作和警報音效反饋
-- **數字鍵盤**: 專用數字輸入介面，適合觸控螢幕操作
-- **系統托盤**: 最小化到系統托盤，保持後台運行
+- `water_house.py` 是主程式入口，負責啟動 Qt 應用、載入對話框模組，以及設定亮暗色系配色。
+- `ui/` 放置主要 UI 邏輯，`scada_dialog.py` 與 `popup_dialog.py` 構成主要互動畫面。
+- `img/` 放置執行與打包時需要的圖片、音效與 icon 資源。
+- `OPC UA tag.csv` 為 OPC UA 標籤資料來源。
+- `water_house_onedir.spec` 與 `water_house_onefile.spec` 為 PyInstaller 打包設定。
+- `.github/workflows/build-release.yml` 負責 Windows 與 macOS 的建置與發版。
 
-## 系統需求
+## 依賴管理
 
-- **Python**: >= 3.12
-- **作業系統**: Windows 10/11, Linux, macOS
-- **記憶體**: 至少 512MB RAM
-- **儲存空間**: 至少 100MB 可用空間
+本專案現在統一由 `uv` 管理：
 
-## 安裝說明
+- 主要執行依賴定義在 `pyproject.toml`
+- 建置依賴放在 `build` dependency group
+- 開發工具放在 `dev` dependency group
+- 鎖定版本記錄在 `uv.lock`
 
-### 1. 環境準備
-確保系統已安裝 Python 3.12 或更高版本：
+不再使用 `requirements.txt`。
 
-```bash
-python --version
-```
+## 環境需求
 
-### 2. 安裝依賴項
-使用 pip 安裝所需套件：
+- Python 3.12 以上
+- 已安裝 `uv`
+
+## 安裝與執行
+
+安裝依賴：
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
-或使用 uv（推薦）：
+啟動程式：
 
 ```bash
-uv pip install -r requirements.txt
+uv run python water_house.py
 ```
 
-### 3. 運行應用程式
-直接運行主程式：
+## 開發工具
+
+安裝開發工具：
 
 ```bash
-python water_house.py
+uv sync --group dev
 ```
 
-## 建置說明
-
-### 使用 PyInstaller 打包
-專案提供兩個打包配置：
-
-#### OneDir 模式（推薦）
-將應用程式打包到單一目錄：
+執行格式化與檢查：
 
 ```bash
-pyinstaller water_house_onedir.spec
+uv run black .
+uv run flake8 .
+uv run mypy .
 ```
 
-#### OneFile 模式
-將應用程式打包成單一可執行檔案：
+## 打包
+
+安裝建置依賴：
 
 ```bash
-pyinstaller water_house_onefile.spec
+uv sync --group build
 ```
 
-打包後的可執行檔案位於 `build/` 目錄中。
+建立 OneDir 版本：
+
+```bash
+uv run pyinstaller water_house_onedir.spec
+```
+
+建立 OneFile 版本：
+
+```bash
+uv run pyinstaller water_house_onefile.spec
+```
+
+產物會輸出到 `dist/`。
 
 ## 專案結構
 
-```
+```text
 water_house/
-├── water_house.py          # 主程式入口
-├── ui/                     # 用戶介面模組
-│   ├── scada_dialog.py     # 主 SCADA 介面
-│   └── popup_dialog.py     # 彈出對話框（數字鍵盤等）
-├── scada/                  # SCADA 相關資源
-├── img/                    # 圖片和音效資源
-├── OPC UA tag.csv          # OPC UA 標籤定義
-├── requirements.txt        # Python 依賴項
-├── pyproject.toml          # 專案配置
-└── README.md              # 專案說明
+├── .github/workflows/build-release.yml
+├── img/
+├── ui/
+├── OPC UA tag.csv
+├── pyproject.toml
+├── README.md
+├── uv.lock
+├── water_house.py
+├── water_house_onedir.spec
+└── water_house_onefile.spec
 ```
 
-## 配置說明
+## CI/CD
 
-### OPC UA 連接
-應用程式會自動連接到預設的 OPC UA 伺服器。標籤定義位於 `OPC UA tag.csv` 檔案中，包含：
+GitHub Actions 已改為使用 `uv`：
 
-- 標籤名稱
-- OPC UA NodeId
-- 數據類型
-- 存取權限
-
-### 主題設定
-應用程式會自動檢測 Windows 系統主題偏好設定。如需手動調整，請修改 `water_house.py` 中的主題邏輯。
-
-## 使用說明
-
-1. **啟動應用程式**: 運行 `water_house.py` 或打包後的可執行檔案
-2. **連接監控**: 應用程式會自動嘗試連接到 OPC UA 伺服器
-3. **監控數據**: 在主介面查看實時數據和警報狀態
-4. **控制操作**: 使用介面按鈕進行遠程控制
-5. **參數調整**: 點擊數值欄位使用數字鍵盤輸入新值
-
-## 故障排除
-
-### 常見問題
-
-**連接失敗**
-- 檢查 OPC UA 伺服器是否運行
-- 確認網路連接正常
-- 查看防火牆設定
-
-**主題顯示異常**
-- 確保系統支援主題檢測
-- 手動調整 `water_house.py` 中的 `is_light` 變數
-
-**打包後無法運行**
-- 確保所有依賴項正確安裝
-- 檢查 PyInstaller 版本相容性
-- 確認資源檔案路徑正確
-
-## 開發資訊
-
-### 技術棧
-- **GUI 框架**: PyQt6
-- **通訊協議**: OPC UA (asyncua 庫)
-- **打包工具**: PyInstaller
-- **程式語言**: Python 3.12+
-
-### 開發環境設定
-1. 安裝開發依賴項：
-   ```bash
-   pip install -e .
-   ```
-
-2. 安裝開發工具：
-   ```bash
-   pip install black flake8 mypy
-   ```
-
-### 程式碼風格
-專案遵循 PEP 8 程式碼風格標準。使用 Black 進行程式碼格式化。
+- 安裝 `uv`
+- 安裝 Python 3.12
+- 使用 `uv sync --locked --group build` 同步依賴
+- 使用 `uv run pyinstaller ...` 產生各平台打包產物
 
 ## 授權
 
-本專案採用 MIT 授權條款。詳見 LICENSE 檔案。
-
-## 貢獻
-
-歡迎提交 Issue 和 Pull Request！請確保：
-
-1. 程式碼通過所有測試
-2. 遵循現有程式碼風格
-3. 更新相關文檔
-
-## 版本歷史
-
-### v0.1.0
-- 初始版本
-- 基本 SCADA 監控功能
-- OPC UA 通訊支援
-- PyQt6 GUI 介面
-- 自動主題適配
-
-## 聯絡資訊
-
-如有問題或建議，請通過以下方式聯絡：
-- 提交 GitHub Issue
-- 發送郵件至專案維護者
-
----
-
-**注意**: 本應用程式專為特定工業控制系統設計，請在專業指導下使用。
+本專案採用 MIT License，詳見 `LICENSE`。

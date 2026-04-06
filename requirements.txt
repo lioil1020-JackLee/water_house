@@ -1,3 +1,0 @@
-pyqt6
-asyncua
-pyqt6-qt6>=6.10.2
