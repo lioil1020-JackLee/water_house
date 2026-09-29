@@ -7,11 +7,12 @@ import threading
 import asyncio
 import tempfile
 import shutil
+import logging
 from asyncua import Client, ua
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
-    QDialog, QApplication, QSystemTrayIcon, QMenu, QPushButton
+    QDialog, QApplication, QSystemTrayIcon, QMenu, QPushButton, QMessageBox
 )
 from PyQt6.QtGui import QPixmap, QFont, QColor, QScreen, QIcon
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize, QEvent, QThread, pyqtSlot
@@ -65,18 +66,41 @@ class OPCUAClient(QThread):
     
     def write_value(self, tag_name, value):
         """Write value to a tag."""
-        if tag_name in self.nodes and self.client and hasattr(self, 'loop'):
+        if (
+            tag_name in self.nodes
+            and self.client
+            and hasattr(self, "loop")
+            and self.loop.is_running()
+            and self.running
+        ):
             # Cache the write value and timestamp for read-ahead logic
             import time
             self.current_values[tag_name] = value
             self.write_timestamps[tag_name] = time.time()
-            asyncio.run_coroutine_threadsafe(self._write_async(tag_name, value), self.loop)
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._write_async(tag_name, value), self.loop
+                )
+            except (RuntimeError, asyncio.CancelledError) as exc:
+                logging.exception("[OPC UA] 排程寫入失敗: %s", exc)
+                self.write_failed_signal.emit(tag_name)
     
     def read_value(self, tag_name):
         """Read value from a tag synchronously."""
-        if tag_name in self.nodes and self.client:
-            future = asyncio.run_coroutine_threadsafe(self._read_async(tag_name), self.loop)
-            return future.result()
+        if (
+            tag_name in self.nodes
+            and self.client
+            and hasattr(self, "loop")
+            and self.loop.is_running()
+            and self.running
+        ):
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._read_async(tag_name), self.loop
+                )
+                return future.result(timeout=3)
+            except (TimeoutError, RuntimeError, asyncio.CancelledError):
+                logging.exception("[OPC UA] 讀取逾時或執行緒已停止: %s", tag_name)
         return None
     
     async def _read_async(self, tag_name):
@@ -111,7 +135,19 @@ class OPCUAClient(QThread):
     def run(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._run_client())
+        try:
+            self.loop.run_until_complete(self._run_client())
+        except BaseException:
+            logging.exception("[OPC UA] 背景執行緒未捕捉例外")
+        finally:
+            pending = asyncio.all_tasks(self.loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                self.loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            self.loop.close()
     
     async def _run_client(self):
         reconnect_delay = 2  # 重連延遲（秒）
@@ -215,7 +251,7 @@ class OPCUAClient(QThread):
                             print(f"[OPC UA] 連接已斷線 (輪詢失敗 {poll_fail_count} 次)")
                             self.is_connected = False
                             self.connection_lost_signal.emit()
-                            # 直接 break，讓外部異常處理來完整清理和重連
+                            # 直接 break，交由下方清理連線後再重連
                             break
                     else:
                         # 輪詢成功，重置失敗計數
@@ -231,6 +267,15 @@ class OPCUAClient(QThread):
                         self.update_signal.emit(updates)
                     
                     await asyncio.sleep(1)  # Poll every second
+
+                # 內部輪詢因連線失效或 stop() 離開時，務必釋放連線。
+                try:
+                    await asyncio.wait_for(self.client.disconnect(), timeout=2.0)
+                except Exception:
+                    logging.exception("[OPC UA] 輪詢結束時清理連線失敗")
+                if self.running:
+                    await asyncio.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay + 1, 10)
                         
             except Exception as e:
                 # 輪詢時斷線，記錄連接已斷開
@@ -674,6 +719,7 @@ class ScadaDialog(QMainWindow):
         self.has_alarm = False  # 當前是否有任何警報（壓扣或通訊斷線）
         self.is_disconnected = False  # 通訊斷線狀態
         self.alarm_window_raised = False  # 用於防止重複置頂窗口
+        self._allow_close = False
         
         # 音訊播放器
         self.media_player = QMediaPlayer()
@@ -1042,7 +1088,7 @@ class ScadaDialog(QMainWindow):
             
             # 添加「退出」菜單項
             exit_action = tray_menu.addAction("結束應用")
-            exit_action.triggered.connect(self.close)
+            exit_action.triggered.connect(self._request_exit)
             
             # 設置菜單
             self.tray_icon.setContextMenu(tray_menu)
@@ -1112,6 +1158,20 @@ class ScadaDialog(QMainWindow):
     
     def closeEvent(self, event):
         """Handle window close event - ensure complete shutdown."""
+        if not self._allow_close:
+            answer = QMessageBox.question(
+                self,
+                "確認結束",
+                "確定要結束 water_house 監控程式嗎？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self._allow_close = True
+
+        logging.info("[UI] 使用者確認正常關閉程式")
         print("[UI] 關閉視窗，清理資源...")
         
         # 停止 OPC UA 客戶端線程
@@ -1131,6 +1191,19 @@ class ScadaDialog(QMainWindow):
         import sys
         import os
         sys.exit(0)
+
+    def _request_exit(self):
+        """Require an explicit confirmation before a human-triggered exit."""
+        answer = QMessageBox.question(
+            self,
+            "確認結束",
+            "確定要結束 water_house 監控程式嗎？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._allow_close = True
+            self.close()
     
     def _build_rooms(self):
         """構建房間佈局。"""

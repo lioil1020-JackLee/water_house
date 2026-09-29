@@ -6,3 +6,6 @@ dist/
 scada/
 *.docx
 *.pdf
+*.log
+*.ahk
+*_watchdog.exe

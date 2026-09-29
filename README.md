@@ -81,6 +81,18 @@ uv run pyinstaller water_house_onefile.spec
 
 產物會輸出到 `dist/`。
 
+## 客戶端常駐與故障追蹤
+
+Windows onefile 版本會將執行記錄寫入：
+
+```text
+%LOCALAPPDATA%\WaterHouse\logs\
+```
+
+其中 `water_house.log` 記錄一般啟動與 OPC UA 錯誤，`water_house_fault.log` 記錄底層例外，`water_house.heartbeat` 供監控程式判斷 Qt 事件迴圈是否仍在更新。
+
+可將 `water_house_watchdog.ahk` 放在 `water_house.exe` 同一資料夾，以 AutoHotkey v2 執行。它每 5 秒檢查 `water_house.exe` 是否仍在執行；程序消失時會自動重新啟動。watchdog 的重啟事件會記錄在同資料夾的 `water_house_watchdog.log`。
+
 ## 專案結構
 
 ```text

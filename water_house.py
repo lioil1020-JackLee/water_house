@@ -1,7 +1,14 @@
 import sys
 import os
+import tempfile
+import time
+import faulthandler
+import logging
+import threading
+from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QPalette, QColor
+from PyQt6.QtCore import QTimer
 # ensure workspace root is in sys.path so UI package can be imported when running script
 root = os.path.dirname(os.path.abspath(__file__))
 if root not in sys.path:
@@ -15,6 +22,38 @@ def load_from_path(name, path):
     spec.loader.exec_module(module)
     return module
 
+
+def _setup_runtime_logging():
+    """Create writable diagnostics for windowed/onefile deployments."""
+    log_dir = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "WaterHouse" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=str(log_dir / "water_house.log"),
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(threadName)s %(message)s",
+        encoding="utf-8",
+    )
+
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        logging.critical("未捕捉例外", exc_info=(exc_type, exc_value, exc_traceback))
+
+    def handle_thread_exception(args):
+        logging.critical(
+            "執行緒未捕捉例外 (%s)",
+            getattr(args.thread, "name", "unknown"),
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = handle_exception
+    threading.excepthook = handle_thread_exception
+    fault_file = open(log_dir / "water_house_fault.log", "a", encoding="utf-8")
+    faulthandler.enable(fault_file)
+    logging.info("water_house 啟動，PID=%s", os.getpid())
+    return log_dir
+
 scada_mod = load_from_path('scada_dialog', os.path.join(root, 'ui', 'scada_dialog.py'))
 popup_mod = load_from_path('popup_dialog', os.path.join(root, 'ui', 'popup_dialog.py'))
 
@@ -22,7 +61,9 @@ ScadaDialog = scada_mod.ScadaDialog
 PopupDialog = popup_mod.PopupDialog 
 
 if __name__ == "__main__":
+    log_dir = _setup_runtime_logging()
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     # Detect Windows light/dark preference when possible
     is_light = None
     try:
@@ -72,4 +113,11 @@ if __name__ == "__main__":
 
     window = ScadaDialog()
     window.show()
+    heartbeat_path = log_dir / "water_house.heartbeat"
+    heartbeat_path.write_text(str(time.time()), encoding="ascii")
+    heartbeat_timer = QTimer()
+    heartbeat_timer.timeout.connect(
+        lambda: heartbeat_path.write_text(str(time.time()), encoding="ascii")
+    )
+    heartbeat_timer.start(5000)
     sys.exit(app.exec())
