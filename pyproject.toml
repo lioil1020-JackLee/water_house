@@ -1,6 +1,6 @@
 [project]
 name = "water-house"
-version = "0.1.0"
+version = "4.1.0"
 description = "Water House SCADA desktop application"
 readme = "README.md"
 requires-python = ">=3.12"

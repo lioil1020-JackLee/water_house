@@ -6,13 +6,19 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+concurrency:
+  group: water-house-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
 jobs:
   build:
     name: Build ${{ matrix.build_type }} on ${{ matrix.os }}
+    timeout-minutes: 25
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
         build_type: [onedir, onefile]
@@ -38,64 +44,113 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked --group build
 
+      - name: Test offline alarm and recovery behavior
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run python -m unittest discover -s tests -v
+
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          uv run pyinstaller water_house_${{ matrix.build_type }}.spec
+          uv run python ops/build-app.py ${{ matrix.build_type }}
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed' }
           if ("${{ matrix.build_type }}" -eq "onedir") {
-            cd dist
-            $target = Get-ChildItem -Directory | Select-Object -First 1 -ExpandProperty Name
-            Compress-Archive -Path "$target" -DestinationPath "water_house-Windows-onedir.zip" -Force
+            $watchdogPath = Join-Path $PWD 'dist/water_house/water_house_watchdog.exe'
+            Copy-Item water_house_watchdog.ahk dist/water_house/
+            Copy-Item DEPLOYMENT.md dist/water_house/
+            $appPath = Join-Path $PWD 'dist/water_house/water_house.exe'
+          } else {
+            $watchdogPath = Join-Path $PWD 'dist/water_house_watchdog.exe'
+            $appPath = Join-Path $PWD 'dist/water_house.exe'
+          }
+          ./ops/build-watchdog.ps1 -OutputPath $watchdogPath
+          $resultPath = Join-Path $PWD 'build/packaged-smoke.json'
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $smoke = Start-Process -FilePath $appPath -ArgumentList @('--self-test-output', "`"$resultPath`"") -WindowStyle Hidden -PassThru
+          if (!$smoke.WaitForExit(45000)) {
+            $smoke.Kill($true)
+            throw 'Packaged self-test timed out'
+          }
+          if ($smoke.ExitCode -ne 0 -or !(Test-Path $resultPath)) { throw 'Packaged smoke test failed' }
+          $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+          if (!$result.passed) { throw 'Packaged alarm checks failed' }
+          if ("${{ matrix.build_type }}" -eq "onedir") {
+            Compress-Archive -Path 'dist/water_house' -DestinationPath 'dist/water_house-Windows-onedir.zip' -Force
+          } else {
+            Compress-Archive -Path @('dist/water_house.exe', $watchdogPath, 'water_house_watchdog.ahk', 'DEPLOYMENT.md') -DestinationPath 'dist/water_house-Windows-onefile.zip' -Force
           }
 
       - name: Build (macOS)
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
-          uv run pyinstaller water_house_${{ matrix.build_type }}.spec
+          set -euo pipefail
+          uv run python ops/build-app.py ${{ matrix.build_type }}
+          if [ "${{ matrix.build_type }}" == "onedir" ]; then
+            app_path="dist/water_house/water_house"
+          else
+            app_path="dist/water_house"
+          fi
+          QT_QPA_PLATFORM=offscreen "$app_path" --self-test-output "$PWD/build/packaged-smoke.json"
+          uv run python -c "import json; assert json.load(open('build/packaged-smoke.json'))['passed']"
           cd dist
           if [ "${{ matrix.build_type }}" == "onedir" ]; then
-            target_dir=$(find . -maxdepth 1 -type d -not -path "." | head -n 1)
-            zip -r water_house-macOS-onedir.zip "$target_dir"
+            zip -r water_house-macOS-onedir.zip water_house
           else
-            target_file=$(find . -maxdepth 1 -type f -not -name "*.zip" | head -n 1)
-            zip water_house-macOS-onefile.zip "$target_file"
+            zip water_house-macOS-onefile.zip water_house
           fi
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: water_house-${{ matrix.build_type }}-${{ matrix.os }}
+          if-no-files-found: error
           path: |
             dist/*.zip
             dist/*.exe
 
+      - name: Retain packaged self-test result
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-${{ matrix.build_type }}-${{ matrix.os }}
+          path: build/packaged-smoke.json
+
   release:
     name: Create Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: water_house-*
           path: raw_artifacts
 
       - name: Prepare Release Assets
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p final_assets
           find raw_artifacts -type f \( -name "water_house-*.zip" -o -name "water_house*.exe" \) -exec cp {} final_assets/ \;
-          ls -lh final_assets/
+          cd final_assets
+          sha256sum * > SHA256SUMS.txt
+          ls -lh
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: final_assets/*
           tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: docs/releases/${{ github.ref_name }}.md
+          fail_on_unmatched_files: true
+          make_latest: true
           draft: false
           prerelease: false
         env:

@@ -8,4 +8,6 @@ scada/
 *.pdf
 *.log
 *.ahk
+!water_house_watchdog.ahk
 *_watchdog.exe
+outputs/

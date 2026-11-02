@@ -3,21 +3,18 @@ import sys
 import importlib.util
 from pathlib import Path
 import csv
-import threading
-import asyncio
-import tempfile
-import shutil
 import logging
-from asyncua import Client, ua
-from datetime import datetime
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
     QDialog, QApplication, QSystemTrayIcon, QMenu, QPushButton, QMessageBox
 )
 from PyQt6.QtGui import QPixmap, QFont, QColor, QScreen, QIcon
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize, QEvent, QThread, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize, QEvent, pyqtSlot
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtCore import QUrl
+from ui.alarm_state import AlarmState
+from ui.opcua_client import OPCUAClient
+from runtime_support import APP_VERSION, get_data_dir, get_session_id, record_alarm_event
 
 
 def _load_popup_class():
@@ -39,269 +36,6 @@ def _load_popup_class():
 
 
 PopupDialog = _load_popup_class()
-
-
-class OPCUAClient(QThread):
-    """OPC UA Client thread for reading tag values."""
-    update_signal = pyqtSignal(dict)  # {tag_name: value}
-    write_signal = pyqtSignal(str, object)  # tag_name, value
-    write_failed_signal = pyqtSignal(str)  # tag_name
-    connection_lost_signal = pyqtSignal()  # 連接斷線信號
-    connection_restored_signal = pyqtSignal()  # 連接恢復信號
-    
-    def __init__(self, server_url, tag_list):
-        super().__init__()
-        self.server_url = server_url
-        self.tag_list = tag_list  # list of (tag_name, node_id)
-        self.running = True
-        self.nodes = {}  # tag_name -> node
-        self.client = None
-        self.current_values = {}  # tag_name -> value, 待寫入的緩存值
-        self.write_timestamps = {}  # tag_name -> timestamp, 寫入時間戳
-        self.write_timeout = 10  # seconds
-        self.last_emitted_values = {}  # tag_name -> last value, 上次發出的值，避免重複發出
-        self.is_connected = False  # 連接狀態
-        self.connection_fail_count = 0  # 連接失敗計數
-        self.max_fail_count = 3  # 失敗次數上限，超過認為斷線
-    
-    def write_value(self, tag_name, value):
-        """Write value to a tag."""
-        if (
-            tag_name in self.nodes
-            and self.client
-            and hasattr(self, "loop")
-            and self.loop.is_running()
-            and self.running
-        ):
-            # Cache the write value and timestamp for read-ahead logic
-            import time
-            self.current_values[tag_name] = value
-            self.write_timestamps[tag_name] = time.time()
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    self._write_async(tag_name, value), self.loop
-                )
-            except (RuntimeError, asyncio.CancelledError) as exc:
-                logging.exception("[OPC UA] 排程寫入失敗: %s", exc)
-                self.write_failed_signal.emit(tag_name)
-    
-    def read_value(self, tag_name):
-        """Read value from a tag synchronously."""
-        if (
-            tag_name in self.nodes
-            and self.client
-            and hasattr(self, "loop")
-            and self.loop.is_running()
-            and self.running
-        ):
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    self._read_async(tag_name), self.loop
-                )
-                return future.result(timeout=3)
-            except (TimeoutError, RuntimeError, asyncio.CancelledError):
-                logging.exception("[OPC UA] 讀取逾時或執行緒已停止: %s", tag_name)
-        return None
-    
-    async def _read_async(self, tag_name):
-        try:
-            node = self.nodes[tag_name]
-            value = await node.read_value()
-            return value
-        except Exception as e:
-            return None
-    
-    async def _write_async(self, tag_name, value):
-        try:
-            node = self.nodes[tag_name]
-            # Directly use DataValue for writing to avoid server format issues
-            if isinstance(value, bool):
-                variant = ua.Variant(value, ua.VariantType.Boolean)
-            elif isinstance(value, float):
-                variant = ua.Variant(value, ua.VariantType.Float)
-            elif isinstance(value, int):
-                variant = ua.Variant(value, ua.VariantType.Int32)
-            else:
-                variant = ua.Variant(value)
-            data_value = ua.DataValue(variant)
-            await node.write_value(data_value)
-            print(f"[OPC UA] 寫入成功: {tag_name} = {value}")
-            # Write succeeded, keep cache until polling confirms
-        except Exception as e:
-            print(f"[OPC UA 錯誤] 寫入失敗: {tag_name} - {e}")
-            # Write failed completely, emit failed signal
-            self.write_failed_signal.emit(tag_name)
-    
-    def run(self):
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-        try:
-            self.loop.run_until_complete(self._run_client())
-        except BaseException:
-            logging.exception("[OPC UA] 背景執行緒未捕捉例外")
-        finally:
-            pending = asyncio.all_tasks(self.loop)
-            for task in pending:
-                task.cancel()
-            if pending:
-                self.loop.run_until_complete(
-                    asyncio.gather(*pending, return_exceptions=True)
-                )
-            self.loop.close()
-    
-    async def _run_client(self):
-        reconnect_delay = 2  # 重連延遲（秒）
-        
-        while self.running:
-            self.client = Client(url=self.server_url)
-            # Security mode = None, security policy = None, authentication = Anonymous (default)
-            try:
-                await self.client.connect()
-                print(f"[OPC UA] 已連接到伺服器: {self.server_url}")
-                
-                # 連接成功，立即標記為已連接
-                if not self.is_connected:
-                    self.is_connected = True
-                    print("[OPC UA] 連接已建立")
-                    self.connection_restored_signal.emit()
-                
-                # Create node objects
-                for tag_name, node_id in self.tag_list:
-                    try:
-                        node = self.client.get_node(node_id)
-                        self.nodes[tag_name] = node
-                    except Exception as e:
-                        print(f"[OPC UA 錯誤] 無法取得節點 {node_id}: {e}")
-                
-                print(f"[OPC UA] 已加載 {len(self.nodes)} 個標籤")
-                
-                # Initialize last_emitted_values with None
-                for tag_name in self.nodes.keys():
-                    self.last_emitted_values[tag_name] = None
-                
-                reconnect_delay = 2  # 重置延遲
-                
-                # 內部輪詢循環
-                poll_fail_count = 0  # 連續輪詢失敗計數
-                while self.running:
-                    updates = {}
-                    import time
-                    current_time = time.time()
-                    
-                    poll_success = False  # 標記本次輪詢是否成功
-                    
-                    for tag_name, node in self.nodes.items():
-                        try:
-                            server_value = await node.read_value()
-                            poll_success = True  # 至少有一個標籤讀取成功
-                            
-                            # 決定要發出的值
-                            value_to_emit = None
-                            should_emit = False
-                            
-                            # 情況1: 有待寫入的值（緩存中）
-                            if tag_name in self.current_values:
-                                cached_value = self.current_values[tag_name]
-                                write_time = self.write_timestamps.get(tag_name, current_time)
-                                elapsed = current_time - write_time
-                                
-                                # 伺服器已確認寫入
-                                if server_value == cached_value:
-                                    print(f"[OPC UA] 寫入已確認: {tag_name} = {cached_value}")
-                                    del self.current_values[tag_name]
-                                    if tag_name in self.write_timestamps:
-                                        del self.write_timestamps[tag_name]
-                                    value_to_emit = server_value
-                                    should_emit = True
-                                # 寫入超時：放棄緩存，相信伺服器值
-                                elif elapsed > self.write_timeout:
-                                    print(f"[OPC UA] 寫入超時 {tag_name} ({elapsed:.1f}s)")
-                                    del self.current_values[tag_name]
-                                    if tag_name in self.write_timestamps:
-                                        del self.write_timestamps[tag_name]
-                                    value_to_emit = server_value
-                                    should_emit = True
-                                # 寫入進行中：使用緩存值，但只有在與上次發出值不同時才發出
-                                else:
-                                    value_to_emit = cached_value
-                                    # 只有當緩存值與上次發出值不同時，才發出信號
-                                    if self.last_emitted_values[tag_name] != cached_value:
-                                        should_emit = True
-                            # 情況2: 沒有待寫入的值，使用伺服器值
-                            else:
-                                value_to_emit = server_value
-                                # 只有當伺服器值改變時才發出
-                                if self.last_emitted_values[tag_name] != server_value:
-                                    should_emit = True
-                            
-                            # 發出信號（如果需要）
-                            if should_emit and value_to_emit is not None:
-                                updates[tag_name] = value_to_emit
-                                self.last_emitted_values[tag_name] = value_to_emit
-                                
-                        except Exception as e:
-                            # 讀取失敗，記錄失敗計數
-                            self.connection_fail_count += 1
-                    
-                    # 如果本次輪詢完全失敗（沒有任何標籤讀取成功），累計失敗次數
-                    if not poll_success:
-                        poll_fail_count += 1
-                        # 連續失敗 3 次以上，視為連接斷線
-                        if poll_fail_count >= 3 and self.is_connected:
-                            print(f"[OPC UA] 連接已斷線 (輪詢失敗 {poll_fail_count} 次)")
-                            self.is_connected = False
-                            self.connection_lost_signal.emit()
-                            # 直接 break，交由下方清理連線後再重連
-                            break
-                    else:
-                        # 輪詢成功，重置失敗計數
-                        poll_fail_count = 0
-                        if self.connection_fail_count > 0:
-                            self.connection_fail_count = 0
-                            if not self.is_connected:
-                                self.is_connected = True
-                                print("[OPC UA] 連接已恢復")
-                                self.connection_restored_signal.emit()
-                    
-                    if updates:
-                        self.update_signal.emit(updates)
-                    
-                    await asyncio.sleep(1)  # Poll every second
-
-                # 內部輪詢因連線失效或 stop() 離開時，務必釋放連線。
-                try:
-                    await asyncio.wait_for(self.client.disconnect(), timeout=2.0)
-                except Exception:
-                    logging.exception("[OPC UA] 輪詢結束時清理連線失敗")
-                if self.running:
-                    await asyncio.sleep(reconnect_delay)
-                    reconnect_delay = min(reconnect_delay + 1, 10)
-                        
-            except Exception as e:
-                # 輪詢時斷線，記錄連接已斷開
-                if self.is_connected:
-                    print(f"[OPC UA] 連接已斷線: {e}")
-                    self.is_connected = False
-                    self.connection_lost_signal.emit()
-                
-                # 清理當前連接（帶超時，避免掛起）
-                try:
-                    await asyncio.wait_for(self.client.disconnect(), timeout=2.0)
-                except asyncio.TimeoutError:
-                    print("[OPC UA] 斷開連接超時")
-                except:
-                    pass
-                
-                # 如果還在運行，等待後重新連接
-                if self.running:
-                    print(f"[OPC UA] 將在 {reconnect_delay} 秒後重新連接...")
-                    await asyncio.sleep(reconnect_delay)
-                    # 增加重連延遲，每次加 1 秒，但不超過 10 秒
-                    reconnect_delay = min(reconnect_delay + 1, 10)
-                # 不 break，讓外部 while 迴圈自動進行下一次重連嘗試
-    
-    def stop(self):
-        self.running = False
 
 
 # 房間數據（None 表示空位）
@@ -516,6 +250,8 @@ class RoomCard(QWidget):
             reset_tag=reset_tag,
             delay_tag=delay_tag
         )
+        # Keep settings above a pending alarm's topmost owner window.
+        popup.setParent(self.parent_dialog, popup.windowFlags())
         if popup.exec() == QDialog.DialogCode.Accepted:
             self.set_state(popup.selected_state)
             self.clicked.emit()
@@ -563,6 +299,8 @@ class RoomCard(QWidget):
         self.is_disconnected = disconnected
         if disconnected:
             self.blink_timer.stop()  # 停止閃爍
+        elif self.alarm_status:
+            self.blink_timer.start(self.blink_interval)
         self._update_light()
     
     def set_alarm_enabled(self, enabled):
@@ -695,9 +433,9 @@ class FloorLabel(QLabel):
 class ScadaDialog(QMainWindow):
     """主視窗 - 完整的房間管理介面。"""
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, start_monitoring=True, alarm_state_path=None):
         super().__init__(parent)
-        self.setWindowTitle('北投享溫泉 保全壓扣系統 by JackLee')
+        self.setWindowTitle(f'北投享溫泉 保全壓扣系統 v{APP_VERSION} by JackLee')
         
         if hasattr(sys, '_MEIPASS'):
             meipass = Path(sys._MEIPASS)
@@ -715,17 +453,33 @@ class ScadaDialog(QMainWindow):
         self._resizing = False  # 防止 resizeEvent 無限循環
         self._last_card_size = 0  # 記錄上次卡片大小
         
-        # 警報狀態追踪
-        self.has_alarm = False  # 當前是否有任何警報（壓扣或通訊斷線）
-        self.is_disconnected = False  # 通訊斷線狀態
-        self.alarm_window_raised = False  # 用於防止重複置頂窗口
+        # Live server values and local unacknowledged events are separate.
+        if alarm_state_path is None:
+            alarm_state_path = get_data_dir() / f'pending_alarms.{get_session_id()}.json'
+        self.alarm_state = AlarmState(alarm_state_path)
+        if self.alarm_state.storage_error:
+            record_alarm_event('pending_storage_load_failed', error=self.alarm_state.storage_error)
+            self.alarm_state.update('__storage__', True)
+        self.has_alarm = False
+        self.is_disconnected = False
+        self.alarm_window_raised = False
         self._allow_close = False
+        self._closing = False
+        self.monitoring_recovery_active = False
+        self.latest_health = {}
+        self._display_attempts = 0
+        self._alarm_display_timer = QTimer(self)
+        self._alarm_display_timer.setSingleShot(True)
+        self._alarm_display_timer.timeout.connect(self._attempt_alarm_display)
+        self._opcua_restart_timer = QTimer(self)
+        self._opcua_restart_timer.setSingleShot(True)
+        self._opcua_restart_timer.timeout.connect(self._start_opcua_client)
         
         # 音訊播放器
         self.media_player = QMediaPlayer()
         self.audio_output = QAudioOutput()
         self.media_player.setAudioOutput(self.audio_output)
-        self.audio_output.setVolume(100)
+        self.audio_output.setVolume(1.0)
         
         # 音訊檔案路徑
         alarm_sound_path = os.path.join(self.img_dir, 'Windows Error.wav')
@@ -763,17 +517,25 @@ class ScadaDialog(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        # 頂部工具欄（靜音按鈕）
+        # Local acknowledgement never writes a PLC reset.
         top_bar = QWidget()
         top_bar_layout = QHBoxLayout(top_bar)
         top_bar_layout.setContentsMargins(10, 5, 10, 5)
+        status_layout = QVBoxLayout()
+        self.health_label = QLabel('監控啟動中，尚未取得警報資料')
+        self.health_label.setWordWrap(True)
+        self.pending_label = QLabel('本機沒有待確認警報')
+        self.pending_label.setWordWrap(True)
+        status_layout.addWidget(self.health_label)
+        status_layout.addWidget(self.pending_label)
+        top_bar_layout.addLayout(status_layout, stretch=1)
         top_bar_layout.addStretch()  # 左側彈性空間，讓按鈕靠右
-        
-        # 靜音按鈕（臨時靜音，按下時停止當前警報音，新警報時自動恢復）
-        self.mute_button = QPushButton('🔊')
-        self.mute_button.setFont(QFont(self.font().family(), 28))  # 放大3倍
-        self.mute_button.setMaximumWidth(70)
-        self.mute_button.setMaximumHeight(70)
+        self.pending_button = QPushButton('查看待確認')
+        self.pending_button.clicked.connect(self._show_pending_alarms)
+        top_bar_layout.addWidget(self.pending_button)
+        self.mute_button = QPushButton('確認目前警報並靜音')
+        self.mute_button.setToolTip('只確認這台電腦已收到的警報，不會復歸現場壓扣；新警報會再次提醒。')
+        self.mute_button.setMinimumHeight(42)
         self.mute_button.clicked.connect(self._on_mute_clicked)
         self.is_muted = False  # 當前靜音狀態（只在警報播放時有效）
         self.mute_by_user = False  # 記錄用戶是否按過靜音按鈕
@@ -818,7 +580,12 @@ class ScadaDialog(QMainWindow):
         self._setup_system_tray()
         
         # Start OPC UA client after UI is built
-        QTimer.singleShot(1000, self._start_opcua_client)
+        if start_monitoring:
+            QTimer.singleShot(1000, self._start_opcua_client)
+        self._refresh_alarm_summary()
+        if self.alarm_state.pending:
+            record_alarm_event('pending_restored', count=len(self.alarm_state.pending))
+            QTimer.singleShot(0, self._resume_pending_alarms)
     
     def _load_opcua_tags(self):
         """Load OPC UA tags from CSV file."""
@@ -891,174 +658,273 @@ class ScadaDialog(QMainWindow):
     
     @pyqtSlot(dict)
     def _on_opcua_update(self, updates):
-        """Handle OPC UA value updates."""
-        # Store latest values
+        """Apply only fresh good values; each room has its own alarm edge."""
+        if self._closing:
+            return
+        sender = self.sender()
+        if sender is not None and hasattr(sender, 'update_signal') and sender is not self.opcua_client:
+            return
         self.latest_values.update(updates)
-        
-        # Group updates by room
-        room_updates = {}
+        new_events = []
         for tag_name, value in updates.items():
-            if tag_name in self.tag_to_room:
-                room_key = self.tag_to_room[tag_name]
-                if room_key not in room_updates:
-                    room_updates[room_key] = {}
-                
-                # 根據標籤類型分類更新
-                if '警報狀態' in tag_name:
-                    room_updates[room_key]['alarm_status'] = bool(value)
-                elif '警報開關' in tag_name:
-                    room_updates[room_key]['alarm_enabled'] = bool(value)
-                elif '警報復歸' in tag_name:
-                    room_updates[room_key]['reset'] = bool(value)
-                elif '警報延遲' in tag_name:
-                    room_updates[room_key]['delay'] = float(value)
-        
-        # 應用更新到各個卡片
-        for room_key, updates_dict in room_updates.items():
-            if room_key in self.room_cards:
-                card = self.room_cards[room_key]
-                
-                if 'alarm_status' in updates_dict:
-                    card.set_alarm_status(updates_dict['alarm_status'])
-                if 'alarm_enabled' in updates_dict:
-                    card.set_alarm_enabled(updates_dict['alarm_enabled'])
-                if 'reset' in updates_dict and updates_dict['reset']:
-                    # 按下 reset 時停止音訊
-                    self._stop_alarm_sound()
-        
-        # 檢查是否有任何房間的警報狀態為 true
-        has_room_alarm = any(
-            card.alarm_status for card in self.room_cards.values()
-        )
-        
-        # 如果警報狀態改變，更新音訊播放和窗口
-        self._update_alarm_state(has_room_alarm)
-    
-    def _update_alarm_state(self, has_room_alarm):
-        """Update alarm state and control audio/window."""
-        new_alarm_state = has_room_alarm or self.is_disconnected
-        
-        # 警報狀態從 false → true，開始播放音訊並置頂窗口
-        if new_alarm_state and not self.has_alarm:
-            self.has_alarm = True
-            # 新警報進來時，重置靜音狀態（用戶之前按的靜音只對該警報有效）
+            room_key = self.tag_to_room.get(tag_name)
+            card = self.room_cards.get(room_key)
+            if card is None or value is None:
+                continue
+            if '警報狀態' in tag_name:
+                status = bool(value)
+                previous = self.alarm_state.active.get(str(room_key))
+                event_id = self.alarm_state.event_id_for(room_key)
+                card.set_alarm_status(status)
+                event = self.alarm_state.update(room_key, status)
+                if event is not None:
+                    new_events.append(event)
+                    record_alarm_event('alarm_started', room=str(room_key),
+                                       event_id=event.event_id, source_tag=tag_name)
+                elif previous is True and not status:
+                    record_alarm_event('alarm_cleared', room=str(room_key), event_id=event_id)
+            elif '警報開關' in tag_name:
+                card.set_alarm_enabled(bool(value))
+            # Server reset values are not a local acknowledgement and must not
+            # silence another room's alarm or remove this client's pending event.
+        self._sync_alarm_presentation(new_events)
+
+    def _sync_alarm_presentation(self, new_events=(), *, resume=False):
+        if self._closing:
+            return
+        self.has_alarm = any(self.alarm_state.active.values())
+        self._refresh_alarm_summary()
+        if new_events or (resume and self.alarm_state.pending):
             self.is_muted = False
             self.mute_by_user = False
-            self._play_alarm_sound()
+            # Display is independent of audio success.
             self._raise_and_maximize_window()
-        
-        # 警報狀態從 true → false，停止播放音訊
-        elif not new_alarm_state and self.has_alarm:
-            self.has_alarm = False
+            try:
+                self._play_alarm_sound()
+            except Exception:
+                logging.exception('[ALARM] 音訊播放失敗，視窗提示繼續保留')
+                record_alarm_event('audio_failed')
+        elif not self.alarm_state.pending:
             self._stop_alarm_sound()
-            self.alarm_window_raised = False
-    
+            self._remove_stay_on_top()
+
+    def _resume_pending_alarms(self):
+        self._sync_alarm_presentation(resume=True)
+
+    def _room_description(self, key):
+        if key == '__connection__':
+            return '監控通訊異常'
+        if key == '__storage__':
+            return '本機警報紀錄異常，請保留記錄供查核'
+        card = self.room_cards.get(key)
+        if card is None:
+            try:
+                card = self.room_cards.get(int(key))
+            except (ValueError, TypeError):
+                pass
+        if card is not None:
+            return f'{card.floor} {card.room_label.text()} {card.room_type.splitlines()[0]}'
+        return str(key)
+
+    def _refresh_alarm_summary(self):
+        pending = self.alarm_state.pending
+        descriptions = [self._room_description(event.key) for event in pending]
+        self.pending_button.setEnabled(bool(pending))
+        self.mute_button.setEnabled(bool(pending))
+        if pending:
+            preview = '、'.join(dict.fromkeys(descriptions))
+            if len(preview) > 100:
+                preview = preview[:100] + '…（請查看待確認）'
+            self.pending_label.setText(f'本機待確認 {len(pending)} 件：{preview}')
+            self.pending_label.setStyleSheet('color: #b71c1c; font-weight: bold;')
+            self.pending_label.setToolTip('即使其他電腦已復歸，這台的紀錄仍會保留，直到按下確認。')
+        else:
+            self.pending_label.setText('本機沒有待確認警報')
+            self.pending_label.setStyleSheet('')
+        if self.alarm_state.storage_error:
+            self.pending_label.setText(self.pending_label.text() + '；警報紀錄儲存異常')
+            record_alarm_event('pending_storage_failed', error=self.alarm_state.storage_error)
+
+    def _show_pending_alarms(self):
+        rows = []
+        for event in self.alarm_state.pending:
+            live = '現場仍在警報／待更新' if event.cleared_at is None else '現場已復歸'
+            rows.append(f'#{event.event_id} {self._room_description(event.key)}\n'
+                        f'發生：{event.started_at}；{live}')
+        QMessageBox.information(self, '本機待確認警報',
+                                '\n\n'.join(rows) + '\n\n請使用「確認目前警報並靜音」確認本機紀錄。')
+
     def _play_alarm_sound(self):
-        """Play alarm sound on loop."""
-        # 如果処於靜音模式，不播放
-        if self.is_muted:
+        if self.is_muted or self.alarm_sound_url is None:
             return
-        
-        if self.alarm_sound_url is None:
-            return
-        
-        print("[音訊] 開始播放警報聲...")
         self.media_player.setSource(self.alarm_sound_url)
-        # 設置無限循環（使用很大的次數）
-        self.media_player.setLoops(-1)  # -1 表示無限循環
+        self.media_player.setLoops(-1)
         self.media_player.play()
-    
+
     def _stop_alarm_sound(self):
-        """Stop alarm sound."""
-        if self.media_player.isPlaying():
-            print("[音訊] 停止警報聲...")
+        try:
             self.media_player.stop()
-    
+        except Exception:
+            logging.exception('[ALARM] 停止音訊失敗')
+
     def _on_mute_clicked(self):
-        """Handle mute button click - temporarily mute current alarm."""
-        # 按下靜音按鈕，停止當前警報的播放
-        self._stop_alarm_sound()
+        acknowledged = self.alarm_state.acknowledge()
+        for event in acknowledged:
+            record_alarm_event('alarm_acknowledged', room=event.key, event_id=event.event_id)
         self.is_muted = True
-        self.mute_by_user = True  # 記錄用戶按過靜音
-        print("[UI] 用戶按下靜音按鈕 - 當前警報靜音")
-    
+        self.mute_by_user = True
+        self._stop_alarm_sound()
+        self._remove_stay_on_top()
+        self._refresh_alarm_summary()
+
     def _raise_and_maximize_window(self):
-        """Raise window to top and maximize (once per alarm)."""
-        if self.alarm_window_raised:
+        """Restart one bounded display retry sequence for every new event."""
+        if self._closing or not self.alarm_state.pending:
             return
-        
-        print("[UI] 警報視窗置頂並最大化...")
-        self.alarm_window_raised = True
-        
-        # 使用 QTimer 延遲執行，避免阻擋其他事件
-        def raise_window():
-            # 暫時設置為最上層
-            self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-            self.show()
-            self.raise_()
-            self.activateWindow()
+        self._alarm_display_timer.stop()
+        self._display_attempts = 0
+        record_alarm_event('display_requested', event_ids=[e.event_id for e in self.alarm_state.pending])
+        self._attempt_alarm_display()
+
+    def _attempt_alarm_display(self):
+        if self._closing or not self.alarm_state.pending:
+            self._alarm_display_timer.stop()
+            return
+        self._display_attempts += 1
+        try:
+            if self.isMinimized():
+                self.showNormal()
+            # Keep the visible indication until this client acknowledges it.
+            if not self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint:
+                self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
             self.showMaximized()
-            
-            # 500ms 後移除最上層標誌，允許其他對話框出現在上方
-            QTimer.singleShot(500, self._remove_stay_on_top)
-        
-        QTimer.singleShot(0, raise_window)
-    
+            self.raise_()
+            self.activateWindow()  # Windows may decline focus; do not bypass it.
+            QApplication.alert(self, 0)
+            self.alarm_window_raised = self.isVisible() and not self.isMinimized()
+            active = self.isActiveWindow()
+            record_alarm_event('display_state', attempt=self._display_attempts,
+                               visible=self.isVisible(), minimized=self.isMinimized(),
+                               active=active, event_ids=[e.event_id for e in self.alarm_state.pending])
+            if (not self.alarm_window_raised or not active) and self._display_attempts < 3:
+                self._alarm_display_timer.start(700)
+        except Exception:
+            logging.exception('[ALARM] 警報視窗顯示失敗')
+            record_alarm_event('display_failed', attempt=self._display_attempts)
+            if self._display_attempts < 3:
+                self._alarm_display_timer.start(700)
+
     def _remove_stay_on_top(self):
-        """Remove WindowStaysOnTopHint after alarm window is raised."""
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
-        self.show()
-        print("[UI] 已移除最上層鎖定，允許其他對話框出現")
-    
+        self._alarm_display_timer.stop()
+        self.alarm_window_raised = False
+        if self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint:
+            was_visible = self.isVisible()
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
+            if was_visible:
+                self.show()
+
     @pyqtSlot()
     def _on_connection_lost(self):
-        """Handle OPC UA connection loss."""
-        print("[UI] OPC UA 連接已斷線，燈號變灰色")
+        sender = self.sender()
+        if sender is not None and hasattr(sender, 'update_signal') and sender is not self.opcua_client:
+            return
         self.is_disconnected = True
         for card in self.room_cards.values():
             card.set_disconnect(True)
-        
-        # 檢查是否有房間警報，有的話繼續播放，沒有才開始播放通訊斷線警報聲
-        has_room_alarm = any(
-            card.alarm_status for card in self.room_cards.values()
-        )
-        self._update_alarm_state(has_room_alarm or self.is_disconnected)
-    
+        event = self.alarm_state.update('__connection__', True)
+        if event:
+            record_alarm_event('alarm_started', room=event.key, event_id=event.event_id)
+        self._sync_alarm_presentation([event] if event else [])
+
     @pyqtSlot()
     def _on_connection_restored(self):
-        """Handle OPC UA connection restoration."""
-        print("[UI] OPC UA 連接已恢復，燈號恢復正常")
+        sender = self.sender()
+        if sender is not None and hasattr(sender, 'update_signal') and sender is not self.opcua_client:
+            return
         self.is_disconnected = False
         for card in self.room_cards.values():
             card.set_disconnect(False)
-        
-        # 檢查是否還有房間警報
-        has_room_alarm = any(
-            card.alarm_status for card in self.room_cards.values()
-        )
-        self._update_alarm_state(has_room_alarm)
-    
+        was_active = self.alarm_state.active.get('__connection__')
+        event_id = self.alarm_state.event_id_for('__connection__')
+        self.alarm_state.update('__connection__', False)
+        if was_active:
+            record_alarm_event('alarm_cleared', room='__connection__', event_id=event_id)
+        self._sync_alarm_presentation()
+
+    @pyqtSlot(dict)
+    def _on_opcua_health(self, health):
+        sender = self.sender()
+        if sender is not None and hasattr(sender, 'update_signal') and sender is not self.opcua_client:
+            return
+        previous_reason = self.latest_health.get('reason')
+        previous_healthy = self.latest_health.get('healthy')
+        self.latest_health = dict(health)
+        healthy = bool(health.get('healthy'))
+        bad = len(health.get('bad_tags', []))
+        stale = len(health.get('stale_tags', []))
+        unknown = len(health.get('unknown_tags', []))
+        self.health_label.setText('監控正常：警報資料持續更新' if healthy else
+                                  f'監控異常／尚未就緒：{health.get("reason", "unknown")} '
+                                  f'（失敗 {bad}、逾時 {stale}、未知 {unknown}）')
+        self.health_label.setStyleSheet('' if healthy else 'color: #b45309; font-weight: bold;')
+        if previous_reason != health.get('reason') or previous_healthy != healthy:
+            record_alarm_event('monitoring_health', healthy=healthy, reason=health.get('reason'),
+                               bad_tags=health.get('bad_tags', []), stale_tags=health.get('stale_tags', []),
+                               unknown_tags=health.get('unknown_tags', []))
+        unhealthy_rooms = {self.tag_to_room.get(tag) for field in ('bad_tags', 'stale_tags', 'unknown_tags')
+                           for tag in health.get(field, [])}
+        for key, card in self.room_cards.items():
+            card.set_disconnect(not health.get('connected', False) or key in unhealthy_rooms)
+
     def get_latest_value(self, tag_name):
-        """Get the latest value for a tag."""
         return self.latest_values.get(tag_name)
-    
+
     def _start_opcua_client(self):
-        """Start the OPC UA client thread."""
-        server_url = "opc.tcp://172.27.119.6:49320"
-        if self.opcua_tags:
-            self.opcua_client = OPCUAClient(server_url, self.opcua_tags)
-            self.opcua_client.update_signal.connect(self._on_opcua_update)
-            self.opcua_client.connection_lost_signal.connect(self._on_connection_lost)
-            self.opcua_client.connection_restored_signal.connect(self._on_connection_restored)
-            self.opcua_client.start()
-    
+        if self._closing:
+            return
+        if self.opcua_client is not None and self.opcua_client.isRunning():
+            return
+        if not self.opcua_tags:
+            self.health_label.setText('監控未啟動：警報標籤檔案不存在或無法讀取')
+            self._on_connection_lost()
+            return
+        self._opcua_restart_timer.stop()
+        server_url = 'opc.tcp://172.27.119.6:49320'
+        try:
+            client = OPCUAClient(server_url, self.opcua_tags)
+            previous_client = self.opcua_client
+            self.opcua_client = client
+            if previous_client is not None:
+                previous_client.deleteLater()
+            client.update_signal.connect(self._on_opcua_update)
+            client.connection_lost_signal.connect(self._on_connection_lost)
+            client.connection_restored_signal.connect(self._on_connection_restored)
+            client.health_signal.connect(self._on_opcua_health)
+            client.finished.connect(lambda worker=client: self._on_opcua_finished(worker))
+            record_alarm_event('monitoring_worker_started')
+            client.start()
+            self.monitoring_recovery_active = False
+        except Exception:
+            logging.exception('[OPC UA] 無法建立監控執行緒，5 秒後重試')
+            record_alarm_event('monitoring_worker_start_failed')
+            self.monitoring_recovery_active = True
+            self.health_label.setText('無法啟動監控，5 秒後重試；請保留記錄供查核')
+            self._on_connection_lost()
+            self._opcua_restart_timer.start(5000)
+
+    def _on_opcua_finished(self, worker):
+        if self._closing or worker is not self.opcua_client:
+            return
+        self.monitoring_recovery_active = True
+        record_alarm_event('monitoring_worker_stopped', unexpected=True)
+        self.health_label.setText('監控執行緒已停止，5 秒後重新啟動；本機警報紀錄保留')
+        self._on_connection_lost()
+        self._opcua_restart_timer.start(5000)
+
     def _get_opcua_nodes(self):
-        """Get nodes from OPC UA client."""
         if self.opcua_client:
             self.opcua_nodes = self.opcua_client.nodes
-            # Wait a bit for nodes to be loaded
-            QTimer.singleShot(1000, self._get_opcua_nodes)
-    
+
     def _setup_system_tray(self):
         """設置系統列托盤圖標和功能。"""
         try:
@@ -1074,7 +940,7 @@ class ScadaDialog(QMainWindow):
                 self.tray_icon.setIcon(self.windowIcon())
             
             # 設置工具提示
-            self.tray_icon.setToolTip("water_house")
+            self.tray_icon.setToolTip(f"WaterHouse v{APP_VERSION}")
             
             # 創建托盤菜單
             tray_menu = QMenu(self)
@@ -1172,6 +1038,9 @@ class ScadaDialog(QMainWindow):
             self._allow_close = True
 
         logging.info("[UI] 使用者確認正常關閉程式")
+        self._closing = True
+        self._alarm_display_timer.stop()
+        self._opcua_restart_timer.stop()
         print("[UI] 關閉視窗，清理資源...")
         
         # 停止 OPC UA 客戶端線程
@@ -1179,18 +1048,17 @@ class ScadaDialog(QMainWindow):
             self.opcua_client.stop()
             # 等待線程完全停止（最多等 5 秒）
             if not self.opcua_client.wait(5000):
-                print("[UI 警告] OPC UA 線程未能在 5 秒內停止，強制終止...")
-                self.opcua_client.terminate()
-                self.opcua_client.wait()
+                logging.error('[UI] OPC UA 執行緒尚未停止，保留程式等待安全關閉')
+                self.health_label.setText('背景連線尚未停止，請稍後再結束程式')
+                self._closing = False
+                event.ignore()
+                return
         
         # 接受關閉事件
         event.accept()
         print("[UI] 視窗已關閉，應用即將退出")
         
-        # 強制退出應用（確保沒有其他線程在背景執行）
-        import sys
-        import os
-        sys.exit(0)
+        QApplication.instance().quit()
 
     def _request_exit(self):
         """Require an explicit confirmation before a human-triggered exit."""
