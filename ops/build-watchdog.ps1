@@ -30,6 +30,8 @@ $compilerRoot = Get-VerifiedArchive `
     -Name 'Ahk2Exe-1.1.37.02a2'
 $runtime = Join-Path $runtimeRoot 'AutoHotkey64.exe'
 $source = Join-Path $projectRoot 'water_house_watchdog.ahk'
+$iconPath = Join-Path $projectRoot 'img\享溫泉.ico'
+if (!(Test-Path -LiteralPath $iconPath)) { throw "Watchdog icon is missing: $iconPath" }
 $sourceResult = Join-Path $toolsRoot 'source-validation.json'
 [IO.File]::WriteAllText($sourceResult, '')
 $validation = Start-Process -FilePath $runtime -ArgumentList @('/ErrorStdOut', "`"$source`"", '--validate-only', "`"$sourceResult`"") -WindowStyle Hidden -Wait -PassThru
@@ -43,7 +45,7 @@ $compiler = Get-ChildItem -LiteralPath $compilerRoot -Filter 'Ahk2Exe.exe' -Recu
 if (!$compiler) { throw 'Ahk2Exe.exe not present in pinned compiler archive' }
 $resolvedOutput = [IO.Path]::GetFullPath($OutputPath)
 New-Item -ItemType Directory -Path (Split-Path -Parent $resolvedOutput) -Force | Out-Null
-$compileArgs = @('/in', "`"$source`"", '/out', "`"$resolvedOutput`"", '/base', "`"$runtime`"", '/silent')
+$compileArgs = @('/in', "`"$source`"", '/out', "`"$resolvedOutput`"", '/base', "`"$runtime`"", '/icon', "`"$iconPath`"", '/silent')
 $process = Start-Process -FilePath $compiler -ArgumentList $compileArgs -WindowStyle Hidden -Wait -PassThru
 if ($process.ExitCode -ne 0 -or !(Test-Path -LiteralPath $resolvedOutput)) {
     throw "Watchdog compilation failed: exit code $($process.ExitCode)"

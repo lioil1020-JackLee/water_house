@@ -37,7 +37,7 @@ class WatchdogContractTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, (run.stdout + run.stderr).decode("utf-8", "replace"))
             result = json.loads(result_path.read_text(encoding="utf-8-sig"))
             self.assertTrue(result["passed"])
-            self.assertGreaterEqual(result["test_count"], 21)
+            self.assertGreaterEqual(result["test_count"], 31)
             self.assertEqual(result["process_actions"], 0)
 
 

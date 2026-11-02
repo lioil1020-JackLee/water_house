@@ -533,12 +533,18 @@ class ScadaDialog(QMainWindow):
         self.pending_button = QPushButton('查看待確認')
         self.pending_button.clicked.connect(self._show_pending_alarms)
         top_bar_layout.addWidget(self.pending_button)
-        self.mute_button = QPushButton('確認目前警報並靜音')
-        self.mute_button.setToolTip('只確認這台電腦已收到的警報，不會復歸現場壓扣；新警報會再次提醒。')
-        self.mute_button.setMinimumHeight(42)
+        self.acknowledge_button = QPushButton('確認目前警報')
+        self.acknowledge_button.setToolTip('確認這台電腦已收到的警報並停止本次聲音；不會復歸現場壓扣。')
+        self.acknowledge_button.setMinimumHeight(42)
+        self.acknowledge_button.clicked.connect(self._on_acknowledge_clicked)
+        top_bar_layout.addWidget(self.acknowledge_button)
+        self.mute_button = QPushButton('🔊')
+        self.mute_button.setFont(QFont(self.font().family(), 28))
+        self.mute_button.setFixedSize(70, 70)
         self.mute_button.clicked.connect(self._on_mute_clicked)
         self.is_muted = False  # 當前靜音狀態（只在警報播放時有效）
         self.mute_by_user = False  # 記錄用戶是否按過靜音按鈕
+        self._refresh_mute_button()
         top_bar_layout.addWidget(self.mute_button)
         
         main_layout.addWidget(top_bar)
@@ -697,6 +703,7 @@ class ScadaDialog(QMainWindow):
         if new_events or (resume and self.alarm_state.pending):
             self.is_muted = False
             self.mute_by_user = False
+            self._refresh_mute_button()
             # Display is independent of audio success.
             self._raise_and_maximize_window()
             try:
@@ -730,7 +737,7 @@ class ScadaDialog(QMainWindow):
         pending = self.alarm_state.pending
         descriptions = [self._room_description(event.key) for event in pending]
         self.pending_button.setEnabled(bool(pending))
-        self.mute_button.setEnabled(bool(pending))
+        self.acknowledge_button.setEnabled(bool(pending))
         if pending:
             preview = '、'.join(dict.fromkeys(descriptions))
             if len(preview) > 100:
@@ -752,7 +759,7 @@ class ScadaDialog(QMainWindow):
             rows.append(f'#{event.event_id} {self._room_description(event.key)}\n'
                         f'發生：{event.started_at}；{live}')
         QMessageBox.information(self, '本機待確認警報',
-                                '\n\n'.join(rows) + '\n\n請使用「確認目前警報並靜音」確認本機紀錄。')
+                                '\n\n'.join(rows) + '\n\n請使用「確認目前警報」確認本機紀錄；喇叭按鈕只切換聲音。')
 
     def _play_alarm_sound(self):
         if self.is_muted or self.alarm_sound_url is None:
@@ -768,11 +775,36 @@ class ScadaDialog(QMainWindow):
             logging.exception('[ALARM] 停止音訊失敗')
 
     def _on_mute_clicked(self):
+        """Toggle sound only; acknowledgement and PLC reset are separate actions."""
+        self.is_muted = not self.is_muted
+        self.mute_by_user = self.is_muted
+        self._refresh_mute_button()
+        record_alarm_event('alarm_audio_muted' if self.is_muted else 'alarm_audio_unmuted',
+                           event_ids=[event.event_id for event in self.alarm_state.pending])
+        if self.is_muted or not self.alarm_state.pending:
+            self._stop_alarm_sound()
+        else:
+            try:
+                self._play_alarm_sound()
+            except Exception:
+                logging.exception('[ALARM] 恢復音訊播放失敗，待確認紀錄繼續保留')
+                record_alarm_event('audio_failed')
+
+    def _refresh_mute_button(self):
+        self.mute_button.setText('🔇' if self.is_muted else '🔊')
+        self.mute_button.setAccessibleName('恢復警報聲音' if self.is_muted else '靜音目前警報')
+        self.mute_button.setToolTip(
+            '恢復目前待確認警報聲音；不會確認紀錄或復歸現場壓扣。' if self.is_muted else
+            '靜音目前警報；不會確認紀錄或復歸現場壓扣，新警報會再次響鈴。'
+        )
+
+    def _on_acknowledge_clicked(self):
         acknowledged = self.alarm_state.acknowledge()
         for event in acknowledged:
             record_alarm_event('alarm_acknowledged', room=event.key, event_id=event.event_id)
         self.is_muted = True
         self.mute_by_user = True
+        self._refresh_mute_button()
         self._stop_alarm_sound()
         self._remove_stay_on_top()
         self._refresh_alarm_summary()

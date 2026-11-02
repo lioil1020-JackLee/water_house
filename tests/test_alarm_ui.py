@@ -69,7 +69,7 @@ class AlarmUiTests(unittest.TestCase):
     def test_second_room_alerts_again_after_first_was_acknowledged(self):
         with patch.object(self.window, '_raise_and_maximize_window') as display:
             self.update(201, True)
-            self.window._on_mute_clicked()
+            self.window._on_acknowledge_clicked()
             self.update(202, True)
             self.assertEqual(display.call_count, 2)
             self.assertFalse(self.window.is_muted)
@@ -90,7 +90,7 @@ class AlarmUiTests(unittest.TestCase):
         self.assertTrue(self.window.isVisible())
         self.assertFalse(self.window.isMinimized())
         self.assertTrue(self.window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
-        self.window._on_mute_clicked()
+        self.window._on_acknowledge_clicked()
         self.assertFalse(self.window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
         self.assertFalse(self.window._alarm_display_timer.isActive())
 
@@ -100,6 +100,49 @@ class AlarmUiTests(unittest.TestCase):
             self.update(201, True)
         self.assertTrue(self.window.isVisible())
         self.assertEqual(len(self.window.alarm_state.pending), 1)
+
+    def test_speaker_remains_visible_when_no_pending_alarm(self):
+        self.assertEqual(self.window.mute_button.text(), '🔊')
+        self.assertEqual(self.window.mute_button.width(), 70)
+        self.assertEqual(self.window.mute_button.height(), 70)
+        self.assertTrue(self.window.mute_button.isEnabled())
+        self.assertFalse(self.window.acknowledge_button.isEnabled())
+
+    def test_speaker_mute_and_unmute_do_not_acknowledge_or_write_plc(self):
+        worker = SimpleNamespace(write_value=Mock())
+        self.window.opcua_client = worker
+        self.update(201, True)
+        pending_id = self.window.alarm_state.pending[0].event_id
+        self.window.mute_button.click()
+        self.assertTrue(self.window.is_muted)
+        self.assertEqual(self.window.mute_button.text(), '🔇')
+        self.assertEqual([event.event_id for event in self.window.alarm_state.pending], [pending_id])
+        self.assertTrue(self.window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        self.window.mute_button.click()
+        self.assertFalse(self.window.is_muted)
+        self.assertEqual(self.window.mute_button.text(), '🔊')
+        self.assertEqual([event.event_id for event in self.window.alarm_state.pending], [pending_id])
+        worker.write_value.assert_not_called()
+
+    def test_new_alarm_restores_speaker_after_current_alarm_was_muted(self):
+        self.update(201, True)
+        self.window.mute_button.click()
+        self.assertEqual(self.window.mute_button.text(), '🔇')
+        self.update(202, True)
+        self.assertFalse(self.window.is_muted)
+        self.assertEqual(self.window.mute_button.text(), '🔊')
+        self.assertEqual(len(self.window.alarm_state.pending), 2)
+
+    def test_acknowledge_button_clears_local_records_and_mutes_without_plc_write(self):
+        worker = SimpleNamespace(write_value=Mock())
+        self.window.opcua_client = worker
+        self.update(201, True)
+        self.window.acknowledge_button.click()
+        self.assertEqual(self.window.alarm_state.pending, [])
+        self.assertTrue(self.window.is_muted)
+        self.assertEqual(self.window.mute_button.text(), '🔇')
+        self.assertTrue(self.window.room_cards[201].alarm_status)
+        worker.write_value.assert_not_called()
 
     def test_display_retries_are_bounded_and_new_alarm_can_start_new_attempts(self):
         with patch.object(self.window, 'isActiveWindow', return_value=False):

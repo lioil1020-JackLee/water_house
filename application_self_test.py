@@ -61,6 +61,11 @@ def run_self_test(output: Path) -> int:
                 ).exists()
                 window.grab().save(str(output.with_suffix(".png")))
                 window._on_mute_clicked()
+                result["checks"]["speaker_mute_keeps_pending"] = (
+                    window.is_muted and window.mute_button.text() == '🔇'
+                    and len(window.alarm_state.pending) == 2
+                )
+                window._on_acknowledge_clicked()
                 result["checks"]["local_acknowledgement_clears_pending"] = len(window.alarm_state.pending) == 0
                 result["checks"]["opc_not_started"] = window.opcua_client is source
                 result["checks"]["all_tags_mapped"] = len(window.tag_to_room) == 148

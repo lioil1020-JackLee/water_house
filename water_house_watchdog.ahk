@@ -1,6 +1,6 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Off
-;@Ahk2Exe-SetVersion 4.1.0
+;@Ahk2Exe-SetVersion 4.1.1
 ;@Ahk2Exe-SetDescription Water House session-scoped health watchdog
 
 ; Only this mode is used by automated tests. No monitored-process discovery,
@@ -31,16 +31,17 @@ InitializeWatchdog() {
         wmi: ComObjGet("winmgmts:{impersonationLevel=impersonate}!\\.\root\cimv2"),
         family: Map(), rootPid: 0, startedAt: 0, faultSince: 0,
         lastHeartbeat: false, stoppingAt: 0, nextLaunchAt: 0,
-        state: "", restartTimes: [], busy: false,
+        state: "", recoveryTimes: [], rapidFailures: 0, healthySince: 0, busy: false,
     }
     OnExit(CleanupWatchdog)
+    SetWatchdogIcon()
     A_TrayMenu.Delete()
     A_TrayMenu.Add("Open Water House", OpenWaterHouse)
     A_TrayMenu.Add("Open diagnostic logs", (*) => Run('explorer.exe "' Watch.logDir '"'))
     A_TrayMenu.Add()
     A_TrayMenu.Add("Exit watchdog", (*) => ExitApp(0))
-    A_IconTip := "Water House watchdog 4.1.0"
-    Log("START version=4.1.0 session=" session " target=" target)
+    A_IconTip := "Water House watchdog 4.1.1"
+    Log("START version=4.1.1 session=" session " target=" target)
     if !FileExist(target) {
         Log("ERROR target executable is missing")
         ExitApp(2)
@@ -73,14 +74,40 @@ CheckWatchdogInner() {
         return
     }
     if !scan.records.Length {
+        if Watch.rootPid {
+            exitCode := -1
+            if Watch.family.Has(Watch.rootPid) {
+                heldCode := 0
+                if DllCall("GetExitCodeProcess", "ptr", Watch.family[Watch.rootPid], "uint*", &heldCode)
+                    exitCode := heldCode
+            }
+            restart := EvaluateExitRestart(now, Watch.startedAt, exitCode,
+                Watch.rapidFailures, Watch.stoppingAt != 0)
+            Watch.rapidFailures := restart.rapidFailures
+            Watch.nextLaunchAt := now + restart.delay
+            Log("EXIT root_pid=" Watch.rootPid " code=" exitCode " runtime=" (now - Watch.startedAt)
+                "s restart_delay=" restart.delay "s rapid_failures=" Watch.rapidFailures)
+        }
         CloseFamilyHandles()
-        if now >= Watch.nextLaunchAt && RestartBudgetAvailable(now, Watch.restartTimes) {
-            Run('"' Watch.target '"', A_ScriptDir, , &pid)
-            Watch.nextLaunchAt := now + 60
-            Watch.restartTimes.Push(now)
-            Log("LAUNCH pid=" pid " session=" Watch.session)
+        if now >= Watch.nextLaunchAt {
+            try {
+                Run('"' Watch.target '"', A_ScriptDir, , &pid)
+                Watch.nextLaunchAt := 0
+                Watch.rootPid := pid, Watch.startedAt := now
+                ; Retain a handle immediately, including processes that exit
+                ; before the next discovery tick. Exit code 0 never earns delay.
+                handle := OpenOwnedProcess(pid)
+                if handle
+                    Watch.family[pid] := handle
+                Log("LAUNCH pid=" pid " session=" Watch.session)
+            } catch Error as err {
+                Watch.rapidFailures += 1
+                delay := RapidFailureDelay(Watch.rapidFailures)
+                Watch.nextLaunchAt := now + delay
+                Log("ERROR launch failed; retry_delay=" delay "s reason=" err.Message)
+            }
         } else {
-            LogState("launch_backoff", "WAIT launch backoff or restart budget (3 launches per 10 minutes)")
+            LogState("launch_backoff", "WAIT repeated rapid failures; retry_at=" Watch.nextLaunchAt)
         }
         return
     }
@@ -122,7 +149,6 @@ CheckWatchdogInner() {
                         Log("ERROR termination denied owned_pid=" pid)
                 }
             }
-            Watch.nextLaunchAt := Max(Watch.nextLaunchAt, now + 10)
         }
         return
     }
@@ -136,11 +162,13 @@ CheckWatchdogInner() {
     decision := EvaluateHealth(now, Watch.startedAt, Watch.lastHeartbeat, Watch.faultSince)
     Watch.faultSince := decision.faultSince
     if decision.action = "recover" {
-        if !RestartBudgetAvailable(now, Watch.restartTimes) {
+        if !RestartBudgetAvailable(now, Watch.recoveryTimes) {
             LogState("recovery_backoff", "ERROR recovery deferred by restart budget")
             return
         }
         Log("RECOVER reason=" decision.reason " root_pid=" Watch.rootPid)
+        Watch.recoveryTimes.Push(now)
+        Watch.healthySince := 0
         Watch.stoppingAt := now
         ; Request a normal close first. A confirmation dialog may intercept it;
         ; the bounded grace above then terminates only these validated handles.
@@ -154,7 +182,33 @@ CheckWatchdogInner() {
         }
         return
     }
+    if decision.action = "healthy" {
+        if !Watch.healthySince
+            Watch.healthySince := now
+        if now - Watch.healthySince >= 60 {
+            Watch.rapidFailures := 0
+            Watch.recoveryTimes := []
+        }
+    } else {
+        Watch.healthySince := 0
+    }
     LogState(decision.reason, "HEALTH " decision.reason " root_pid=" Watch.rootPid)
+}
+
+SetWatchdogIcon() {
+    try {
+        if A_IsCompiled {
+            ; Ahk2Exe embeds the project's icon as the first EXE icon group.
+            TraySetIcon(A_ScriptFullPath, 1)
+        } else {
+            iconPath := A_ScriptDir "\享溫泉.ico"
+            if !FileExist(iconPath)
+                iconPath := A_ScriptDir "\img\享溫泉.ico"
+            TraySetIcon(iconPath)
+        }
+    } catch Error as err {
+        Log("WARNING tray icon could not be set: " err.Message)
+    }
 }
 
 DiscoverProcesses() {
@@ -165,8 +219,29 @@ DiscoverProcesses() {
             continue
         path := process.ExecutablePath ""
         if path = "" {
-            unknown := true
-            continue
+            ; WMI can retain a just-exited PID with an empty image path.
+            ; Check its kernel object before treating a stale row as an
+            ; unidentifiable live process that blocks every restart.
+            handle := DllCall("OpenProcess", "uint", 0x101000, "int", false,
+                "uint", process.ProcessId, "ptr")
+            if !handle {
+                if A_LastError = 87 ; ERROR_INVALID_PARAMETER: PID is gone.
+                    continue
+                unknown := true
+                continue
+            }
+            try {
+                if !HandleAlive(handle)
+                    continue
+                identity := InspectProcessHandle(handle, process.ProcessId)
+                if !identity {
+                    unknown := true
+                    continue
+                }
+                path := identity.path
+            } finally {
+                DllCall("CloseHandle", "ptr", handle)
+            }
         }
         if IsExpectedIdentity(path, process.SessionId, Watch.target, Watch.session)
             records.Push({pid: process.ProcessId + 0, parent: process.ParentProcessId + 0})
@@ -296,6 +371,25 @@ RestartBudgetAvailable(now, times) {
     return recent < 3
 }
 
+EvaluateExitRestart(now, startedAt, exitCode, rapidFailures, recovering := false) {
+    ; Human-confirmed normal exits and isolated failures after stable runtime
+    ; restart at the next 5-second tick. Only a repeated rapid crash loop backs off.
+    if exitCode = 0 || recovering || (startedAt && now - startedAt >= 30)
+        return {delay: 0, rapidFailures: 0}
+    failures := rapidFailures + 1
+    return {delay: RapidFailureDelay(failures), rapidFailures: failures}
+}
+
+RapidFailureDelay(failures) {
+    if failures < 3
+        return 0
+    if failures = 3
+        return 5
+    if failures = 4
+        return 15
+    return failures = 5 ? 30 : 60
+}
+
 NormalizePath(path) {
     pathBuf := Buffer(65536, 0)
     if !DllCall("GetFullPathNameW", "str", path, "uint", 32768, "ptr", pathBuf, "ptr", 0)
@@ -320,7 +414,7 @@ CloseFamilyHandles() {
         DllCall("CloseHandle", "ptr", handle)
     Watch.family := Map()
     Watch.rootPid := 0, Watch.startedAt := 0, Watch.faultSince := 0
-    Watch.lastHeartbeat := false, Watch.stoppingAt := 0
+    Watch.lastHeartbeat := false, Watch.stoppingAt := 0, Watch.healthySince := 0
 }
 
 CleanupWatchdog(*) {
@@ -391,6 +485,14 @@ RunSelfTests(outputPath) {
         Check(SingleFamilyRoot([{pid: 100, parent: 9}, {pid: 101, parent: 8}]) = 0, "independent instances disable termination"), count += 1
         Check(!RestartBudgetAvailable(1000, [500, 600, 900]), "restart storm is bounded"), count += 1
         Check(RestartBudgetAvailable(2000, [500, 600, 900]), "restart budget expires"), count += 1
+        Check(EvaluateExitRestart(1000, 995, 0, 8).delay = 0, "normal exit bypasses all crash backoff"), count += 1
+        Check(EvaluateExitRestart(1000, 995, 0, 8).rapidFailures = 0, "normal exit clears rapid failure count"), count += 1
+        Check(EvaluateExitRestart(1000, 900, 1, 8).delay = 0, "single failure after stable runtime restarts immediately"), count += 1
+        Check(EvaluateExitRestart(1000, 995, 1, 0).delay = 0, "first rapid crash restarts next tick"), count += 1
+        Check(EvaluateExitRestart(1000, 995, 1, 1).delay = 0, "second rapid crash restarts next tick"), count += 1
+        Check(EvaluateExitRestart(1000, 995, 1, 2).delay = 5, "third rapid crash starts bounded backoff"), count += 1
+        Check(EvaluateExitRestart(1000, 995, 1, 5).delay = 60, "rapid crash backoff is capped at one minute"), count += 1
+        Check(EvaluateExitRestart(1000, 995, 1, 5, true).delay = 0, "health recovery does not add launch delay"), count += 1
         ; Query only this test interpreter, using query/synchronize rights.
         ; The self-test handle has no PROCESS_TERMINATE permission.
         ownPid := DllCall("GetCurrentProcessId", "uint")

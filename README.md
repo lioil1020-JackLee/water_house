@@ -85,7 +85,7 @@ Windows 請使用上述建置入口；它會限制 DLL 搜尋路徑，避免系�
 
 ## 客戶端常駐與故障追蹤
 
-目前版本為 **v4.1.0**。更新、操作差異及四台現場驗收步驟見 [DEPLOYMENT.md](DEPLOYMENT.md)。Windows Release 的 onefile／onedir 壓縮檔均包含主程式與新版 watchdog，請一起更新。
+目前版本為 **v4.1.1**。更新、操作差異及四台現場驗收步驟見 [DEPLOYMENT.md](DEPLOYMENT.md)。Windows Release 的 onefile／onedir 壓縮檔均包含主程式、新版 watchdog 與圖示，請一起更新。
 
 Windows onefile 版本會將執行記錄寫入：
 

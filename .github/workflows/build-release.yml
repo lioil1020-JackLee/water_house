@@ -59,12 +59,15 @@ jobs:
             $watchdogPath = Join-Path $PWD 'dist/water_house/water_house_watchdog.exe'
             Copy-Item water_house_watchdog.ahk dist/water_house/
             Copy-Item DEPLOYMENT.md dist/water_house/
+            Copy-Item 'img/享溫泉.ico' dist/water_house/
             $appPath = Join-Path $PWD 'dist/water_house/water_house.exe'
           } else {
             $watchdogPath = Join-Path $PWD 'dist/water_house_watchdog.exe'
             $appPath = Join-Path $PWD 'dist/water_house.exe'
           }
           ./ops/build-watchdog.ps1 -OutputPath $watchdogPath
+          uv run python ops/verify-watchdog-icon.py $watchdogPath 'img/享溫泉.ico'
+          if ($LASTEXITCODE -ne 0) { throw 'Watchdog EXE icon verification failed' }
           $resultPath = Join-Path $PWD 'build/packaged-smoke.json'
           $env:QT_QPA_PLATFORM = 'offscreen'
           $smoke = Start-Process -FilePath $appPath -ArgumentList @('--self-test-output', "`"$resultPath`"") -WindowStyle Hidden -PassThru
@@ -78,7 +81,7 @@ jobs:
           if ("${{ matrix.build_type }}" -eq "onedir") {
             Compress-Archive -Path 'dist/water_house' -DestinationPath 'dist/water_house-Windows-onedir.zip' -Force
           } else {
-            Compress-Archive -Path @('dist/water_house.exe', $watchdogPath, 'water_house_watchdog.ahk', 'DEPLOYMENT.md') -DestinationPath 'dist/water_house-Windows-onefile.zip' -Force
+            Compress-Archive -Path @('dist/water_house.exe', $watchdogPath, 'water_house_watchdog.ahk', 'img/享溫泉.ico', 'DEPLOYMENT.md') -DestinationPath 'dist/water_house-Windows-onefile.zip' -Force
           }
 
       - name: Build (macOS)
