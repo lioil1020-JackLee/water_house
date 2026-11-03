@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any
 
-APP_VERSION = "4.1.1"
+APP_VERSION = "4.2.0"
 _fault_stream = None
 
 
@@ -46,6 +46,7 @@ class AlarmEventFormatter(logging.Formatter):
 def record_alarm_event(event: str, **fields: Any) -> None:
     """Retain received/cleared/acknowledged/displayed events on each PC."""
     payload = {**fields, "event": event, "timestamp": time.time(), "pid": os.getpid()}
+    payload.setdefault('session_id', get_session_id())
     logging.getLogger("water_house.alarms").info(
         "%s %s", event, json.dumps(fields, ensure_ascii=False, default=str),
         extra={"alarm_event": payload},

@@ -1,6 +1,6 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Off
-;@Ahk2Exe-SetVersion 4.1.1
+;@Ahk2Exe-SetVersion 4.2.0
 ;@Ahk2Exe-SetDescription Water House session-scoped health watchdog
 
 ; Only this mode is used by automated tests. No monitored-process discovery,
@@ -40,8 +40,8 @@ InitializeWatchdog() {
     A_TrayMenu.Add("Open diagnostic logs", (*) => Run('explorer.exe "' Watch.logDir '"'))
     A_TrayMenu.Add()
     A_TrayMenu.Add("Exit watchdog", (*) => ExitApp(0))
-    A_IconTip := "Water House watchdog 4.1.1"
-    Log("START version=4.1.1 session=" session " target=" target)
+    A_IconTip := "Water House watchdog 4.2.0"
+    Log("START version=4.2.0 session=" session " target=" target)
     if !FileExist(target) {
         Log("ERROR target executable is missing")
         ExitApp(2)

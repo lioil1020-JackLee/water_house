@@ -7,6 +7,7 @@ or events discarded by the PLC/server before they reach its monitored-item queue
 """
 
 import asyncio
+from datetime import timezone
 import logging
 import threading
 import time
@@ -59,6 +60,9 @@ class _SubscriptionHandler:
 
 
 class OPCUAClient(QThread):
+    REQUESTED_PUBLISHING_INTERVAL_MS = 200.0
+    REQUESTED_SAMPLING_INTERVAL_MS = 100.0
+    REQUESTED_QUEUE_SIZE = 128
     update_signal = pyqtSignal(dict)
     write_signal = pyqtSignal(str, object)
     write_failed_signal = pyqtSignal(str)
@@ -122,6 +126,15 @@ class OPCUAClient(QThread):
         self._wake_event = None
         self._main_task = None
         self._health_reason = "OPC UA 尚未連線"
+        self._revised_publishing_interval_ms = None
+        self._revised_monitored_items = {}
+        self._snapshot_duration_ms = None
+        self._snapshot_cycle_ms = None
+        self._last_snapshot_started = None
+        self._last_notification_at = None
+        self._notification_count = 0
+        self._notification_source_age_ms = None
+        self._notification_server_age_ms = None
         self.write_signal.connect(self.write_value)
 
     @property
@@ -171,7 +184,111 @@ class OPCUAClient(QThread):
                 "last_data_at": self._last_data_at,
                 "last_cycle_at": self._last_cycle_at,
                 "subscription_ready": self._subscription_ready,
+                "timing": self._timing_snapshot(),
             }
+
+    def _timing_snapshot(self):
+        items = {
+            tag: dict(values) for tag, values in self._revised_monitored_items.items()
+        }
+        sampling = [values["sampling_interval_ms"] for values in items.values()]
+        queues = [values["queue_size"] for values in items.values()]
+        return {
+            "requested_publishing_interval_ms": self.REQUESTED_PUBLISHING_INTERVAL_MS,
+            "requested_sampling_interval_ms": self.REQUESTED_SAMPLING_INTERVAL_MS,
+            "requested_queue_size": self.REQUESTED_QUEUE_SIZE,
+            "revised_publishing_interval_ms": self._revised_publishing_interval_ms,
+            "revised_sampling_interval_ms_min": min(sampling) if sampling else None,
+            "revised_sampling_interval_ms_max": max(sampling) if sampling else None,
+            "revised_queue_size_min": min(queues) if queues else None,
+            "revised_queue_size_max": max(queues) if queues else None,
+            "revised_monitored_item_count": len(items),
+            "revised_monitored_items": items,
+            "compensation_wait_seconds": self.poll_interval,
+            "last_snapshot_duration_ms": self._snapshot_duration_ms,
+            "last_snapshot_start_interval_ms": self._snapshot_cycle_ms,
+            "last_notification_at": self._last_notification_at,
+            "notification_count": self._notification_count,
+            # Timestamp age is diagnostic only: unchanged values, clock offset,
+            # and server timestamp semantics prevent an end-to-end latency claim.
+            "last_notification_source_timestamp_age_ms": self._notification_source_age_ms,
+            "last_notification_server_timestamp_age_ms": self._notification_server_age_ms,
+        }
+
+    def _observe_subscription_result(self, result):
+        revised = float(result.RevisedPublishingInterval)
+        with self._lock:
+            self._revised_publishing_interval_ms = revised
+        LOGGER.info(
+            "OPC UA negotiated publishing interval: requested_ms=%s revised_ms=%s",
+            self.REQUESTED_PUBLISHING_INTERVAL_MS,
+            revised,
+        )
+
+    def _observe_monitored_item_results(self, params, results):
+        observed = {}
+        for item, result in zip(params.ItemsToCreate, results):
+            if not result.StatusCode.is_good():
+                continue
+            node_id = item.ItemToMonitor.NodeId
+            key = node_id.to_string() if hasattr(node_id, "to_string") else str(node_id)
+            tag = self._node_to_tag.get(key)
+            if tag is not None:
+                observed[tag] = {
+                    "sampling_interval_ms": float(result.RevisedSamplingInterval),
+                    "queue_size": int(result.RevisedQueueSize),
+                }
+        with self._lock:
+            self._revised_monitored_items.update(observed)
+        if observed:
+            LOGGER.info(
+                "OPC UA negotiated monitored items: count=%s requested_sampling_ms=%s "
+                "revised_sampling_ms=%s..%s requested_queue=%s revised_queue=%s..%s",
+                len(observed),
+                self.REQUESTED_SAMPLING_INTERVAL_MS,
+                min(v["sampling_interval_ms"] for v in observed.values()),
+                max(v["sampling_interval_ms"] for v in observed.values()),
+                self.REQUESTED_QUEUE_SIZE,
+                min(v["queue_size"] for v in observed.values()),
+                max(v["queue_size"] for v in observed.values()),
+            )
+
+    def _install_timing_observers(self):
+        """Observe wire results on this client's own service instance only.
+
+        asyncua 1.1.8's high-level APIs discard revised monitoring parameters.
+        These thin wrappers preserve the SDK's registration, update, dispatch,
+        return values and exceptions; no global library class is patched.
+        """
+        service = getattr(self.client, "uaclient", None)
+        if service is None:
+            return  # Test/adaptor clients may not expose the low-level service.
+        for name in (
+            "create_subscription",
+            "update_subscription",
+            "create_monitored_items",
+        ):
+            original = getattr(service, name, None)
+            if original is None:
+                continue
+
+            async def observe(*args, _name=name, _original=original, **kwargs):
+                result = await _original(*args, **kwargs)
+                try:
+                    if _name == "create_monitored_items":
+                        self._observe_monitored_item_results(args[0], result)
+                    else:
+                        self._observe_subscription_result(result)
+                except Exception:
+                    # Diagnostics must never break a successful protocol call.
+                    LOGGER.warning(
+                        "OPC UA timing observation unavailable: %s",
+                        _name,
+                        exc_info=True,
+                    )
+                return result
+
+            setattr(service, name, observe)
 
     def _publish_health(self):
         snapshot = self.health_snapshot()
@@ -239,6 +356,15 @@ class OPCUAClient(QThread):
             previous = self.last_emitted_values.get(tag, _MISSING)
             old_quality = self._tag_health[tag]["quality"]
             now = time.time()
+            if origin == "subscription":
+                self._last_notification_at = now
+                self._notification_count += 1
+                self._notification_source_age_ms = self._timestamp_age_ms(
+                    getattr(data_value, "SourceTimestamp", None), now
+                )
+                self._notification_server_age_ms = self._timestamp_age_ms(
+                    getattr(data_value, "ServerTimestamp", None), now
+                )
             self._cache[tag] = value
             self._good_monotonic[tag] = time.monotonic()
             self._tag_health[tag].update(
@@ -255,6 +381,19 @@ class OPCUAClient(QThread):
         if publish_health:
             self._publish_health()
         return True
+
+    @staticmethod
+    def _timestamp_age_ms(timestamp, now):
+        if timestamp is None:
+            return None
+        try:
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            # A negative result is retained to expose clock skew, not presented
+            # as a negative transport latency or used to reject alarm data.
+            return round((now - timestamp.timestamp()) * 1000.0, 3)
+        except (AttributeError, OSError, OverflowError, ValueError):
+            return None
 
     def read_value(self, tag_name):
         """Immediate cache read; never block the GUI on a network request."""
@@ -311,6 +450,14 @@ class OPCUAClient(QThread):
             self._write_failed(tag_name, exc)
 
     async def _read_snapshot(self):
+        started = time.perf_counter()
+        with self._lock:
+            self._snapshot_cycle_ms = (
+                (started - self._last_snapshot_started) * 1000.0
+                if self._last_snapshot_started is not None
+                else None
+            )
+            self._last_snapshot_started = started
         good_count = 0
         pairs = list(self.nodes.items())
         for offset in range(0, len(pairs), self.chunk_size):
@@ -345,6 +492,8 @@ class OPCUAClient(QThread):
                     exc,
                 )
         self._last_cycle_at = time.time()
+        with self._lock:
+            self._snapshot_duration_ms = (time.perf_counter() - started) * 1000.0
         self._expire_writes()
         self._publish_health()
         return good_count
@@ -361,7 +510,9 @@ class OPCUAClient(QThread):
 
     async def _create_subscription(self):
         self._subscription = await asyncio.wait_for(
-            self.client.create_subscription(200.0, _SubscriptionHandler(self)),
+            self.client.create_subscription(
+                self.REQUESTED_PUBLISHING_INTERVAL_MS, _SubscriptionHandler(self)
+            ),
             timeout=self.request_timeout,
         )
         pairs = list(self.nodes.items())
@@ -370,7 +521,9 @@ class OPCUAClient(QThread):
             chunk = pairs[offset : offset + self.chunk_size]
             handles = await asyncio.wait_for(
                 self._subscription.subscribe_data_change(
-                    [node for _, node in chunk], queuesize=128, sampling_interval=100.0
+                    [node for _, node in chunk],
+                    queuesize=self.REQUESTED_QUEUE_SIZE,
+                    sampling_interval=self.REQUESTED_SAMPLING_INTERVAL_MS,
                 ),
                 timeout=self.request_timeout,
             )
@@ -447,6 +600,17 @@ class OPCUAClient(QThread):
         while self.running:
             try:
                 self.client = self._client_factory(url=self.server_url)
+                with self._lock:
+                    self._revised_publishing_interval_ms = None
+                    self._revised_monitored_items = {}
+                    self._last_snapshot_started = None
+                    self._snapshot_cycle_ms = None
+                    self._snapshot_duration_ms = None
+                    self._last_notification_at = None
+                    self._notification_count = 0
+                    self._notification_source_age_ms = None
+                    self._notification_server_age_ms = None
+                self._install_timing_observers()
                 await asyncio.wait_for(
                     self.client.connect(), timeout=self.request_timeout
                 )

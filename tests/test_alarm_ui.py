@@ -32,6 +32,21 @@ class FakeWorker(QObject):
 
 
 class AlarmUiTests(unittest.TestCase):
+    def test_first_clear_after_restart_is_logged_with_restored_occurrence_uid(self):
+        from ui.alarm_state import AlarmState
+
+        model = self.window.alarm_state
+        occurrence = model.update(201, True)
+        model.acknowledge()
+        self.window.alarm_state = AlarmState(
+            model.storage_path, history_store=self.window.alarm_history
+        )
+        with patch('ui.scada_dialog.record_alarm_event') as events:
+            self.update(201, False)
+        events.assert_any_call('alarm_cleared', room='201',
+                               event_id=occurrence.event_id, event_uid=occurrence.event_uid)
+        self.assertEqual(self.window.alarm_state.pending, [])
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -53,6 +68,8 @@ class AlarmUiTests(unittest.TestCase):
                                if room == key and '警報狀態' in tag) for key in (201, 202)}
 
     def tearDown(self):
+        if self.window._history_dialog is not None:
+            self.assertTrue(self.window._history_dialog.shutdown(3000))
         self.window._closing = True
         self.window._alarm_display_timer.stop()
         self.window._opcua_restart_timer.stop()
@@ -107,6 +124,21 @@ class AlarmUiTests(unittest.TestCase):
         self.assertEqual(self.window.mute_button.height(), 70)
         self.assertTrue(self.window.mute_button.isEnabled())
         self.assertFalse(self.window.acknowledge_button.isEnabled())
+        self.assertTrue(self.window.pending_button.isEnabled())
+
+    def test_history_is_available_without_pending_and_viewing_never_acknowledges_or_resets(self):
+        self.assertEqual(self.window.pending_button.text(), '警報紀錄')
+        self.window.pending_button.click()
+        dialog = self.window._history_dialog
+        self.assertIsNotNone(dialog)
+        self.assertTrue(dialog.isVisible())
+        self.assertIsNone(self.window.history_log_dir)
+        self.assertEqual(self.window.alarm_state.pending, [])
+        self.update(201, True)
+        pending_id = self.window.alarm_state.pending[0].event_id
+        self.window.pending_button.click()
+        self.assertIs(self.window._history_dialog, dialog)
+        self.assertEqual([event.event_id for event in self.window.alarm_state.pending], [pending_id])
 
     def test_speaker_mute_and_unmute_do_not_acknowledge_or_write_plc(self):
         worker = SimpleNamespace(write_value=Mock())
@@ -179,6 +211,23 @@ class AlarmUiTests(unittest.TestCase):
         self.assertTrue(self.window.room_cards[201].is_disconnected)
         self.assertFalse(self.window.room_cards[202].is_disconnected)
         self.assertEqual(len(self.window.alarm_state.pending), 1)
+
+    def test_timing_tooltip_keeps_requested_and_server_values_distinct(self):
+        self.window._on_opcua_health({'healthy': True, 'connected': True, 'reason': 'test',
+                                     'timing': {'requested_sampling_interval_ms': 100,
+                                                'requested_publishing_interval_ms': 200}})
+        tooltip = self.window.health_label.toolTip()
+        self.assertIn('取樣要求：100 ms；伺服器核定：未取得', tooltip)
+        self.assertIn('發布要求：200 ms；伺服器核定：未取得', tooltip)
+        self.window._on_opcua_health({'healthy': True, 'connected': True, 'reason': 'test',
+                                     'timing': {'requested_sampling_interval_ms': 100,
+                                                'requested_publishing_interval_ms': 200,
+                                                'revised_sampling_interval_ms_min': 250,
+                                                'revised_sampling_interval_ms_max': 500,
+                                                'revised_publishing_interval_ms': 1000}})
+        tooltip = self.window.health_label.toolTip()
+        self.assertIn('伺服器核定：250 ms ～ 500 ms', tooltip)
+        self.assertIn('發布要求：200 ms；伺服器核定：1000 ms', tooltip)
 
     def test_worker_creation_failure_schedules_retry_and_local_communication_alarm(self):
         with patch('ui.scada_dialog.OPCUAClient', side_effect=RuntimeError('synthetic start failure')):

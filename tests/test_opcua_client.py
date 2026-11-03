@@ -1,6 +1,7 @@
 """Offline tests using the real worker with fake OPC UA services."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import os
 import threading
 import time
@@ -171,6 +172,116 @@ class OPCUAClientTests(unittest.TestCase):
         self.assertIs(self.worker.read_value("A"), True)
         self.assertIsNone(self.worker.read_value("missing"))
         self.assertEqual(self.fake.read_batches, [])
+
+    def test_negotiated_timing_is_unknown_until_wire_response(self):
+        timing = self.worker.health_snapshot()["timing"]
+        self.assertEqual(timing["requested_sampling_interval_ms"], 100.0)
+        self.assertEqual(timing["requested_publishing_interval_ms"], 200.0)
+        self.assertIsNone(timing["revised_publishing_interval_ms"])
+        self.assertIsNone(timing["revised_sampling_interval_ms_max"])
+        self.assertIsNone(timing["revised_queue_size_min"])
+
+    def test_wire_timing_observers_keep_server_results_and_exceptions(self):
+        node_id = ua.NodeId("wire-A", 2)
+        self.worker._node_to_tag[node_id.to_string()] = "A"
+        create_result = SimpleNamespace(RevisedPublishingInterval=500.0)
+        update_result = SimpleNamespace(RevisedPublishingInterval=750.0)
+        item_result = ua.MonitoredItemCreateResult(
+            StatusCode_=ua.StatusCode(),
+            MonitoredItemId=99,
+            RevisedSamplingInterval=250.0,
+            RevisedQueueSize=64,
+        )
+
+        async def create_subscription(params, callback=None):
+            return create_result
+
+        async def update_subscription(params):
+            return update_result
+
+        async def create_monitored_items(params):
+            return [item_result]
+
+        service = SimpleNamespace(
+            create_subscription=create_subscription,
+            update_subscription=update_subscription,
+            create_monitored_items=create_monitored_items,
+        )
+        self.fake.uaclient = service
+        self.worker._install_timing_observers()
+        params = ua.CreateMonitoredItemsParameters()
+        item = ua.MonitoredItemCreateRequest()
+        item.ItemToMonitor.NodeId = node_id
+        params.ItemsToCreate = [item]
+
+        async def exercise():
+            self.assertIs(await service.create_subscription(object()), create_result)
+            self.assertIs(await service.update_subscription(object()), update_result)
+            result = await service.create_monitored_items(params)
+            self.assertIs(result[0], item_result)
+
+        asyncio.run(exercise())
+        timing = self.worker.health_snapshot()["timing"]
+        self.assertEqual(timing["revised_publishing_interval_ms"], 750.0)
+        self.assertEqual(timing["revised_sampling_interval_ms_min"], 250.0)
+        self.assertEqual(timing["revised_queue_size_max"], 64)
+        timing["revised_monitored_items"]["A"]["queue_size"] = 1
+        self.assertEqual(
+            self.worker.health_snapshot()["timing"]["revised_queue_size_max"], 64
+        )
+
+        async def fail(params):
+            raise ConnectionError("wire failure remains a protocol failure")
+
+        other = SimpleNamespace(create_subscription=fail)
+        self.fake.uaclient = other
+        self.worker._install_timing_observers()
+        with self.assertRaises(ConnectionError):
+            asyncio.run(other.create_subscription(object()))
+
+    def test_invalid_timing_metadata_never_discards_a_successful_wire_result(self):
+        successful_result = object()
+
+        async def create_subscription(params):
+            return successful_result
+
+        self.fake.uaclient = SimpleNamespace(create_subscription=create_subscription)
+        self.worker._install_timing_observers()
+        with self.assertLogs("ui.opcua_client", level="WARNING"):
+            result = asyncio.run(self.fake.uaclient.create_subscription(object()))
+        self.assertIs(result, successful_result)
+        self.assertIsNone(
+            self.worker.health_snapshot()["timing"]["revised_publishing_interval_ms"]
+        )
+
+    def test_notification_timestamp_age_is_diagnostic_not_a_rejection(self):
+        value = ua.DataValue(
+            ua.Variant(True),
+            ua.StatusCode(),
+            SourceTimestamp=datetime.now(timezone.utc) + timedelta(seconds=5),
+            ServerTimestamp=datetime.now(timezone.utc) - timedelta(seconds=2),
+        )
+        self.assertTrue(
+            self.worker._apply_data_value("A", value, origin="subscription")
+        )
+        timing = self.worker.health_snapshot()["timing"]
+        self.assertEqual(timing["notification_count"], 1)
+        self.assertLess(timing["last_notification_source_timestamp_age_ms"], 0)
+        self.assertGreater(timing["last_notification_server_timestamp_age_ms"], 1900)
+        self.assertIs(self.worker.read_value("A"), True)
+
+    def test_snapshot_reports_measured_duration_and_start_interval(self):
+        async def slow_read(nodes):
+            await asyncio.sleep(0.01)
+
+        self.fake.on_read = slow_read
+        asyncio.run(self.worker._read_snapshot())
+        first = self.worker.health_snapshot()["timing"]
+        self.assertGreaterEqual(first["last_snapshot_duration_ms"], 8)
+        self.assertIsNone(first["last_snapshot_start_interval_ms"])
+        asyncio.run(self.worker._read_snapshot())
+        second = self.worker.health_snapshot()["timing"]
+        self.assertGreaterEqual(second["last_snapshot_start_interval_ms"], 8)
 
     def test_bad_quality_is_not_a_valid_alarm_value(self):
         self.apply("A", False)

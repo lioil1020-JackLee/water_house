@@ -13,6 +13,8 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize, QEvent, pyqtSlot
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtCore import QUrl
 from ui.alarm_state import AlarmState
+from ui.alarm_history import AlarmHistoryStore
+from ui.alarm_history_dialog import AlarmHistoryDialog
 from ui.opcua_client import OPCUAClient
 from runtime_support import APP_VERSION, get_data_dir, get_session_id, record_alarm_event
 
@@ -454,9 +456,15 @@ class ScadaDialog(QMainWindow):
         self._last_card_size = 0  # 記錄上次卡片大小
         
         # Live server values and local unacknowledged events are separate.
-        if alarm_state_path is None:
+        default_alarm_state_path = alarm_state_path is None
+        if default_alarm_state_path:
             alarm_state_path = get_data_dir() / f'pending_alarms.{get_session_id()}.json'
-        self.alarm_state = AlarmState(alarm_state_path)
+        history_path = (get_data_dir() / 'alarm_history.sqlite3' if default_alarm_state_path else
+                        Path(alarm_state_path).with_name('alarm_history.sqlite3'))
+        self.alarm_history = AlarmHistoryStore(history_path, session_id=get_session_id())
+        self.history_log_dir = get_data_dir() / 'logs' if default_alarm_state_path else None
+        self._history_dialog = None
+        self.alarm_state = AlarmState(alarm_state_path, history_store=self.alarm_history)
         if self.alarm_state.storage_error:
             record_alarm_event('pending_storage_load_failed', error=self.alarm_state.storage_error)
             self.alarm_state.update('__storage__', True)
@@ -530,7 +538,8 @@ class ScadaDialog(QMainWindow):
         status_layout.addWidget(self.pending_label)
         top_bar_layout.addLayout(status_layout, stretch=1)
         top_bar_layout.addStretch()  # 左側彈性空間，讓按鈕靠右
-        self.pending_button = QPushButton('查看待確認')
+        self.pending_button = QPushButton('警報紀錄')
+        self.pending_button.setToolTip('隨時查看本機保存的歷史與未確認警報；不會確認或復歸警報。')
         self.pending_button.clicked.connect(self._show_pending_alarms)
         top_bar_layout.addWidget(self.pending_button)
         self.acknowledge_button = QPushButton('確認目前警報')
@@ -681,14 +690,17 @@ class ScadaDialog(QMainWindow):
                 status = bool(value)
                 previous = self.alarm_state.active.get(str(room_key))
                 event_id = self.alarm_state.event_id_for(room_key)
+                event_uid = self.alarm_state.event_uid_for(room_key)
                 card.set_alarm_status(status)
                 event = self.alarm_state.update(room_key, status)
                 if event is not None:
                     new_events.append(event)
                     record_alarm_event('alarm_started', room=str(room_key),
-                                       event_id=event.event_id, source_tag=tag_name)
-                elif previous is True and not status:
-                    record_alarm_event('alarm_cleared', room=str(room_key), event_id=event_id)
+                                       event_id=event.event_id, event_uid=event.event_uid,
+                                       source_tag=tag_name)
+                elif (previous is True or event_uid is not None) and not status:
+                    record_alarm_event('alarm_cleared', room=str(room_key),
+                                       event_id=event_id, event_uid=event_uid)
             elif '警報開關' in tag_name:
                 card.set_alarm_enabled(bool(value))
             # Server reset values are not a local acknowledgement and must not
@@ -730,18 +742,20 @@ class ScadaDialog(QMainWindow):
             except (ValueError, TypeError):
                 pass
         if card is not None:
-            return f'{card.floor} {card.room_label.text()} {card.room_type.splitlines()[0]}'
+            label = card.room_label.text()
+            room_type = card.room_type.splitlines()[0]
+            return f'{card.floor} {label}' if room_type in label else f'{card.floor} {label} {room_type}'
         return str(key)
 
     def _refresh_alarm_summary(self):
         pending = self.alarm_state.pending
         descriptions = [self._room_description(event.key) for event in pending]
-        self.pending_button.setEnabled(bool(pending))
+        self.pending_button.setEnabled(True)
         self.acknowledge_button.setEnabled(bool(pending))
         if pending:
             preview = '、'.join(dict.fromkeys(descriptions))
             if len(preview) > 100:
-                preview = preview[:100] + '…（請查看待確認）'
+                preview = preview[:100] + '…（請查看警報紀錄）'
             self.pending_label.setText(f'本機待確認 {len(pending)} 件：{preview}')
             self.pending_label.setStyleSheet('color: #b71c1c; font-weight: bold;')
             self.pending_label.setToolTip('即使其他電腦已復歸，這台的紀錄仍會保留，直到按下確認。')
@@ -753,13 +767,20 @@ class ScadaDialog(QMainWindow):
             record_alarm_event('pending_storage_failed', error=self.alarm_state.storage_error)
 
     def _show_pending_alarms(self):
-        rows = []
-        for event in self.alarm_state.pending:
-            live = '現場仍在警報／待更新' if event.cleared_at is None else '現場已復歸'
-            rows.append(f'#{event.event_id} {self._room_description(event.key)}\n'
-                        f'發生：{event.started_at}；{live}')
-        QMessageBox.information(self, '本機待確認警報',
-                                '\n\n'.join(rows) + '\n\n請使用「確認目前警報」確認本機紀錄；喇叭按鈕只切換聲音。')
+        if self._history_dialog is None:
+            self._history_dialog = AlarmHistoryDialog(
+                self.alarm_history, self, log_dir=self.history_log_dir,
+                room_description=self._room_description,
+            )
+        else:
+            self._history_dialog.refresh()
+        self._history_dialog.setWindowFlag(
+            Qt.WindowType.WindowStaysOnTopHint,
+            bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint),
+        )
+        self._history_dialog.show()
+        self._history_dialog.raise_()
+        self._history_dialog.activateWindow()
 
     def _play_alarm_sound(self):
         if self.is_muted or self.alarm_sound_url is None:
@@ -801,7 +822,8 @@ class ScadaDialog(QMainWindow):
     def _on_acknowledge_clicked(self):
         acknowledged = self.alarm_state.acknowledge()
         for event in acknowledged:
-            record_alarm_event('alarm_acknowledged', room=event.key, event_id=event.event_id)
+            record_alarm_event('alarm_acknowledged', room=event.key,
+                               event_id=event.event_id, event_uid=event.event_uid)
         self.is_muted = True
         self.mute_by_user = True
         self._refresh_mute_button()
@@ -865,7 +887,8 @@ class ScadaDialog(QMainWindow):
             card.set_disconnect(True)
         event = self.alarm_state.update('__connection__', True)
         if event:
-            record_alarm_event('alarm_started', room=event.key, event_id=event.event_id)
+            record_alarm_event('alarm_started', room=event.key,
+                               event_id=event.event_id, event_uid=event.event_uid)
         self._sync_alarm_presentation([event] if event else [])
 
     @pyqtSlot()
@@ -878,9 +901,11 @@ class ScadaDialog(QMainWindow):
             card.set_disconnect(False)
         was_active = self.alarm_state.active.get('__connection__')
         event_id = self.alarm_state.event_id_for('__connection__')
+        event_uid = self.alarm_state.event_uid_for('__connection__')
         self.alarm_state.update('__connection__', False)
-        if was_active:
-            record_alarm_event('alarm_cleared', room='__connection__', event_id=event_id)
+        if was_active or event_uid is not None:
+            record_alarm_event('alarm_cleared', room='__connection__',
+                               event_id=event_id, event_uid=event_uid)
         self._sync_alarm_presentation()
 
     @pyqtSlot(dict)
@@ -899,6 +924,7 @@ class ScadaDialog(QMainWindow):
                                   f'監控異常／尚未就緒：{health.get("reason", "unknown")} '
                                   f'（失敗 {bad}、逾時 {stale}、未知 {unknown}）')
         self.health_label.setStyleSheet('' if healthy else 'color: #b45309; font-weight: bold;')
+        self.health_label.setToolTip(self._opcua_timing_tooltip(health.get('timing', {})))
         if previous_reason != health.get('reason') or previous_healthy != healthy:
             record_alarm_event('monitoring_health', healthy=healthy, reason=health.get('reason'),
                                bad_tags=health.get('bad_tags', []), stale_tags=health.get('stale_tags', []),
@@ -907,6 +933,30 @@ class ScadaDialog(QMainWindow):
                            for tag in health.get(field, [])}
         for key, card in self.room_cards.items():
             card.set_disconnect(not health.get('connected', False) or key in unhealthy_rooms)
+
+    @staticmethod
+    def _opcua_timing_tooltip(timing):
+        def milliseconds(value):
+            return f'{value:g} ms' if isinstance(value, (int, float)) else '未取得'
+
+        def interval(low, high):
+            if low is None or high is None:
+                return '未取得'
+            if low == high:
+                return milliseconds(low)
+            return f'{milliseconds(low)} ～ {milliseconds(high)}'
+
+        return '\n'.join([
+            'OPC UA 更新時間（要求值與伺服器核定值分開顯示）',
+            f'取樣要求：{milliseconds(timing.get("requested_sampling_interval_ms"))}；'
+            f'伺服器核定：{interval(timing.get("revised_sampling_interval_ms_min"), timing.get("revised_sampling_interval_ms_max"))}',
+            f'發布要求：{milliseconds(timing.get("requested_publishing_interval_ms"))}；'
+            f'伺服器核定：{milliseconds(timing.get("revised_publishing_interval_ms"))}',
+            f'最近補讀耗時：{milliseconds(timing.get("last_snapshot_duration_ms"))}；'
+            f'兩輪補讀開始間隔：{milliseconds(timing.get("last_snapshot_start_interval_ms"))}',
+            f'最近通知來源時間戳距接收：{milliseconds(timing.get("last_notification_source_timestamp_age_ms"))}',
+            '時間戳差不是 PLC 到畫面的完整延遲，實際更新仍受伺服器取樣與網路影響。',
+        ])
 
     def get_latest_value(self, tag_name):
         return self.latest_values.get(tag_name)
@@ -1069,6 +1119,10 @@ class ScadaDialog(QMainWindow):
                 return
             self._allow_close = True
 
+        if self._history_dialog is not None and not self._history_dialog.shutdown():
+            self.health_label.setText('警報紀錄正在讀取，請稍後再結束程式')
+            event.ignore()
+            return
         logging.info("[UI] 使用者確認正常關閉程式")
         self._closing = True
         self._alarm_display_timer.stop()
