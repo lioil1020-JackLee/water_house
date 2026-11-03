@@ -123,12 +123,13 @@ water_house/
 
 ## CI/CD
 
-GitHub Actions 已改為使用 `uv`：
+GitHub Actions 使用 Python 3.12、`uv` 與支援 Node.js 24 的 Actions：
 
-- 安裝 `uv`
-- 安裝 Python 3.12
-- 使用 `uv sync --locked --group build` 同步依賴
-- 使用 `uv run pyinstaller ...` 產生各平台打包產物
+- 推送 `main` 或向 `main` 送出 PR 時，在 Windows 與 macOS 執行離線測試。
+- 推送 `v*` 版本標籤時，才建置 Windows／macOS 的 onedir、onefile，執行打包產物自測，再發布 Release。
+- 手動執行 workflow 會完成四種打包及自測並保留 Artifacts，不發布或修改 Release。
+- 同步推送主分支與版本標籤時，不會重複執行完整打包，也不會自動取消既有執行。
+- 依賴由 `uv sync --locked --group build` 同步；打包使用 `ops/build-app.py`，Windows 另驗證 watchdog 編譯與圖示。
 
 ## 授權
 

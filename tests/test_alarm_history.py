@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
-import time
 import unittest
+from unittest.mock import patch
 
 from ui.alarm_history import AlarmHistoryStore
 
@@ -294,19 +294,33 @@ class AlarmHistoryTests(unittest.TestCase):
         self.assertEqual(self.store.query()[0]["room"], "202")
 
     def test_sqlite_lock_failure_returns_without_unbounded_wait(self):
+        connect = sqlite3.connect
+        busy_timeouts = []
+
+        def observed_connect(*args, **kwargs):
+            connection = connect(*args, **kwargs)
+            busy_timeouts.append(connection.execute("PRAGMA busy_timeout").fetchone()[0])
+            return connection
+
         with closing(sqlite3.connect(self.store.db_path, timeout=0.1)) as blocker:
             blocker.execute("BEGIN IMMEDIATE")
-            started = time.monotonic()
-            self.assertFalse(
-                self.store.record_event(
-                    "alarm_started",
-                    event_uid="a",
-                    room="201",
-                    timestamp=1000,
+            with patch(
+                "ui.alarm_history.sqlite3.connect", side_effect=observed_connect
+            ) as connections:
+                self.assertFalse(
+                    self.store.record_event(
+                        "alarm_started",
+                        event_uid="a",
+                        room="201",
+                        timestamp=1000,
+                    )
                 )
-            )
-            self.assertLess(time.monotonic() - started, 1.0)
+            # Assert SQLite's effective wait budget and absence of retries;
+            # shared CI runners can deschedule a 250 ms operation for over 1 s.
+            connections.assert_called_once()
+            self.assertLessEqual(busy_timeouts[0], 250)
             self.assertIsNotNone(self.store.last_error)
+            self.assertIn("locked", self.store.last_error)
             blocker.rollback()
         self.assertTrue(
             self.store.record_event(
