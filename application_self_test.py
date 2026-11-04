@@ -119,12 +119,46 @@ def run_self_test(output: Path) -> int:
                 window._history_dialog.grab().save(
                     str(output.with_name(output.stem + "-history.png"))
                 )
+                window._on_connection_lost()
+                result["checks"]["communication_alarm_waits_sixty_seconds"] = (
+                    window.CONNECTION_ALARM_DELAY_SECONDS == 60.0
+                    and window._connection_alarm_timer.isActive()
+                    and not window.alarm_state.pending
+                )
+                source.update_signal.emit({first: True})
+                result["checks"]["room_alarm_immediate_during_communication_grace"] = (
+                    [event.key for event in window.alarm_state.pending] == [str(room_a)]
+                )
+                window._on_connection_restored()
+                result["checks"]["short_communication_fault_cancelled"] = (
+                    not window._connection_alarm_timer.isActive()
+                    and window._connection_fault_since is None
+                    and [event.key for event in window.alarm_state.pending] == [str(room_a)]
+                )
+                window._on_acknowledge_clicked()
+                source.update_signal.emit({first: False})
+                window._on_connection_lost()
+                # Advance only the offline candidate's age; exercise the real
+                # Qt timer callback without delaying each packaged build a minute.
+                window._connection_fault_since -= window.CONNECTION_ALARM_DELAY_SECONDS
+                window._connection_alarm_timer.start(0)
+                app.processEvents()
+                result["checks"]["sustained_communication_fault_confirmed"] = (
+                    [event.key for event in window.alarm_state.pending] == ["__connection__"]
+                )
+                window._on_connection_restored()
+                result["checks"]["recovered_communication_fault_stays_pending"] = (
+                    len(window.alarm_state.pending) == 1
+                    and window.alarm_state.pending[0].cleared_at is not None
+                    and "已恢復" in window.pending_label.text()
+                )
                 result["checks"]["opc_not_started"] = window.opcua_client is source
                 result["checks"]["all_tags_mapped"] = len(window.tag_to_room) == 148
                 result["passed"] = all(result["checks"].values())
             except Exception:
                 result["error"] = traceback.format_exc()
             finally:
+                window._connection_alarm_timer.stop()
                 if window._history_dialog is not None:
                     window._history_dialog.shutdown(3000)
                 atomic_json_write(output, result)

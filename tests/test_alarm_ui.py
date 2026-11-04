@@ -73,6 +73,7 @@ class AlarmUiTests(unittest.TestCase):
         self.window._closing = True
         self.window._alarm_display_timer.stop()
         self.window._opcua_restart_timer.stop()
+        self.window._connection_alarm_timer.stop()
         self.window.hide()
         self.window.deleteLater()
         self.app.processEvents()
@@ -229,12 +230,183 @@ class AlarmUiTests(unittest.TestCase):
         self.assertIn('伺服器核定：250 ms ～ 500 ms', tooltip)
         self.assertIn('發布要求：200 ms；伺服器核定：1000 ms', tooltip)
 
-    def test_worker_creation_failure_schedules_retry_and_local_communication_alarm(self):
-        with patch('ui.scada_dialog.OPCUAClient', side_effect=RuntimeError('synthetic start failure')):
-            self.window._start_opcua_client()
-        self.assertTrue(self.window._opcua_restart_timer.isActive())
-        self.assertTrue(self.window.monitoring_recovery_active)
+    def test_worker_creation_failure_retries_immediately_but_waits_to_alert(self):
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            with patch('ui.scada_dialog.OPCUAClient', side_effect=RuntimeError('synthetic start failure')):
+                self.window._start_opcua_client()
+            self.assertTrue(self.window._opcua_restart_timer.isActive())
+            self.assertTrue(self.window.monitoring_recovery_active)
+            self.assertTrue(self.window._connection_alarm_timer.isActive())
+            self.assertEqual(self.window.alarm_state.pending, [])
+            clock.return_value = 160.0
+            self.window._connection_alarm_timer.timeout.emit()
         self.assertEqual([e.key for e in self.window.alarm_state.pending], ['__connection__'])
+
+    def test_communication_alert_requires_a_full_sixty_seconds(self):
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            with patch.object(self.window, '_raise_and_maximize_window') as display:
+                self.window._on_connection_lost()
+                self.assertTrue(self.window.room_cards[201].is_disconnected)
+                self.assertTrue(self.window._connection_alarm_timer.isActive())
+                self.assertEqual(self.window.alarm_state.pending, [])
+                display.assert_not_called()
+                clock.return_value = 159.999
+                self.window._connection_alarm_timer.timeout.emit()
+                self.assertEqual(self.window.alarm_state.pending, [])
+                display.assert_not_called()
+                clock.return_value = 160.0
+                self.window._connection_alarm_timer.timeout.emit()
+                self.assertEqual([e.key for e in self.window.alarm_state.pending], ['__connection__'])
+                display.assert_called_once()
+
+    def test_short_communication_fault_leaves_no_pending_or_history_alarm(self):
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            with patch.object(self.window, '_raise_and_maximize_window') as display:
+                self.window._on_connection_lost()
+                clock.return_value = 159.0
+                self.window._on_connection_restored()
+                self.assertFalse(self.window._connection_alarm_timer.isActive())
+                clock.return_value = 160.0
+                self.window._confirm_connection_fault()
+                self.assertEqual(self.window.alarm_state.pending, [])
+                self.assertEqual(self.window.alarm_history.query(), [])
+                display.assert_not_called()
+
+    def test_repeated_loss_and_reconnect_attempts_do_not_extend_the_deadline(self):
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            self.window._on_connection_lost()
+            for moment in (115.0, 130.0, 159.0):
+                clock.return_value = moment
+                self.window._on_connection_lost()
+            clock.return_value = 160.0
+            self.window._confirm_connection_fault()
+        self.assertEqual([e.key for e in self.window.alarm_state.pending], ['__connection__'])
+
+    def test_recovery_then_new_fault_starts_a_new_sixty_second_window(self):
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            self.window._on_connection_lost()
+            clock.return_value = 150.0
+            self.window._on_connection_restored()
+            clock.return_value = 151.0
+            self.window._on_connection_lost()
+            clock.return_value = 210.999
+            self.window._confirm_connection_fault()
+            self.assertEqual(self.window.alarm_state.pending, [])
+            clock.return_value = 211.0
+            self.window._confirm_connection_fault()
+        self.assertEqual([e.key for e in self.window.alarm_state.pending], ['__connection__'])
+
+    def test_healthy_snapshot_cancels_pending_confirmation_without_restored_signal(self):
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            self.window._on_connection_lost()
+            clock.return_value = 159.0
+            self.window._on_opcua_health({'healthy': True, 'connected': True, 'reason': 'recovered'})
+            self.assertFalse(self.window._connection_alarm_timer.isActive())
+            self.assertIn('監控正常', self.window.health_label.text())
+            clock.return_value = 160.0
+            self.window._confirm_connection_fault()
+        self.assertEqual(self.window.alarm_state.pending, [])
+
+    def test_timer_checks_current_worker_health_before_announcing_queued_recovery(self):
+        health = {'healthy': True, 'connected': True, 'reason': 'recovered'}
+        self.window.opcua_client = SimpleNamespace(health_snapshot=lambda: health)
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            with patch.object(self.window, '_raise_and_maximize_window') as display:
+                self.window._on_connection_lost()
+                clock.return_value = 160.0
+                self.window._confirm_connection_fault()
+                self.assertEqual(self.window.alarm_state.pending, [])
+                self.assertFalse(self.window._connection_alarm_timer.isActive())
+                display.assert_not_called()
+
+    def test_room_alarm_is_immediate_during_communication_grace_period(self):
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0):
+            with patch.object(self.window, '_raise_and_maximize_window') as display:
+                self.window._on_connection_lost()
+                self.update(201, True)
+                self.assertEqual([e.key for e in self.window.alarm_state.pending], ['201'])
+                display.assert_called_once()
+
+    def test_confirmed_communication_fault_stays_pending_after_recovery(self):
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            self.window._on_connection_lost()
+            clock.return_value = 160.0
+            self.window._confirm_connection_fault()
+            occurrence = self.window.alarm_state.pending[0]
+            clock.return_value = 161.0
+            self.window._on_connection_restored()
+        self.assertEqual(self.window.alarm_state.pending, [occurrence])
+        self.assertIsNotNone(occurrence.cleared_at)
+        self.assertFalse(self.window.alarm_state.active['__connection__'])
+        self.assertIn('已恢復', self.window.pending_label.text())
+        self.assertIsNotNone(self.window.alarm_history.query()[0]['cleared_at'])
+
+    def test_acknowledged_ongoing_communication_fault_does_not_repeat(self):
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            with patch.object(self.window, '_raise_and_maximize_window') as display:
+                self.window._on_connection_lost()
+                clock.return_value = 160.0
+                self.window._confirm_connection_fault()
+                self.window._on_acknowledge_clicked()
+                for moment in (180.0, 220.0):
+                    clock.return_value = moment
+                    self.window._on_connection_lost()
+                    self.window._confirm_connection_fault()
+                self.assertEqual(self.window.alarm_state.pending, [])
+                display.assert_called_once()
+
+    def test_initial_unknown_snapshot_does_not_create_a_fault_candidate(self):
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            self.window._on_opcua_health({'healthy': False, 'connected': True,
+                                         'reason': 'initial snapshot',
+                                         'unknown_tags': [self.tags[201]]})
+            self.assertFalse(self.window._connection_alarm_timer.isActive())
+            clock.return_value = 160.0
+            self.window._confirm_connection_fault()
+        self.assertEqual(self.window.alarm_state.pending, [])
+
+    def test_late_signals_from_replaced_worker_cannot_start_or_cancel_fault(self):
+        previous, current = FakeWorker(), FakeWorker()
+        for worker in (previous, current):
+            worker.connection_lost_signal.connect(self.window._on_connection_lost)
+            worker.connection_restored_signal.connect(self.window._on_connection_restored)
+            worker.health_signal.connect(self.window._on_opcua_health)
+        self.window.opcua_client = current
+        healthy = {'healthy': True, 'connected': True, 'reason': 'recovered'}
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            previous.connection_lost_signal.emit()
+            self.assertFalse(self.window._connection_alarm_timer.isActive())
+            current.connection_lost_signal.emit()
+            self.assertTrue(self.window._connection_alarm_timer.isActive())
+            clock.return_value = 130.0
+            previous.connection_restored_signal.emit()
+            previous.health_signal.emit(healthy)
+            previous.connection_lost_signal.emit()
+            self.assertTrue(self.window.is_disconnected)
+            self.assertTrue(self.window._connection_alarm_timer.isActive())
+            clock.return_value = 160.0
+            self.window._confirm_connection_fault()
+            self.assertEqual([e.key for e in self.window.alarm_state.pending], ['__connection__'])
+            current.connection_restored_signal.emit()
+            self.assertFalse(self.window._connection_alarm_timer.isActive())
+            self.assertIsNotNone(self.window.alarm_state.pending[0].cleared_at)
+            clock.return_value = 200.0
+            current.connection_lost_signal.emit()
+            self.assertTrue(self.window._connection_alarm_timer.isActive())
+            current.health_signal.emit(healthy)
+            self.assertFalse(self.window._connection_alarm_timer.isActive())
+            self.assertFalse(self.window.is_disconnected)
+
+    def test_closing_window_cannot_start_or_confirm_communication_alarm(self):
+        with patch('ui.scada_dialog.time.monotonic', return_value=100.0) as clock:
+            with patch.object(self.window, '_raise_and_maximize_window') as display:
+                self.window._on_connection_lost()
+                self.window._closing = True
+                clock.return_value = 160.0
+                self.window._confirm_connection_fault()
+                self.window._on_connection_lost()
+                self.assertEqual(self.window.alarm_state.pending, [])
+                display.assert_not_called()
 
     def test_blinking_resumes_after_point_quality_recovers(self):
         card = self.window.room_cards[201]

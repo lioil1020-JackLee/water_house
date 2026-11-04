@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import csv
 import logging
+import math
+import time
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
     QDialog, QApplication, QSystemTrayIcon, QMenu, QPushButton, QMessageBox
@@ -434,6 +436,8 @@ class FloorLabel(QLabel):
 
 class ScadaDialog(QMainWindow):
     """主視窗 - 完整的房間管理介面。"""
+
+    CONNECTION_ALARM_DELAY_SECONDS = 60.0
     
     def __init__(self, parent=None, *, start_monitoring=True, alarm_state_path=None):
         super().__init__(parent)
@@ -482,6 +486,11 @@ class ScadaDialog(QMainWindow):
         self._opcua_restart_timer = QTimer(self)
         self._opcua_restart_timer.setSingleShot(True)
         self._opcua_restart_timer.timeout.connect(self._start_opcua_client)
+        self._connection_fault_since = None
+        self._connection_alarm_timer = QTimer(self)
+        self._connection_alarm_timer.setSingleShot(True)
+        self._connection_alarm_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._connection_alarm_timer.timeout.connect(self._confirm_connection_fault)
         
         # 音訊播放器
         self.media_player = QMediaPlayer()
@@ -749,7 +758,9 @@ class ScadaDialog(QMainWindow):
 
     def _refresh_alarm_summary(self):
         pending = self.alarm_state.pending
-        descriptions = [self._room_description(event.key) for event in pending]
+        descriptions = [self._room_description(event.key) +
+                        ('（已恢復）' if event.key == '__connection__' and event.cleared_at else '')
+                        for event in pending]
         self.pending_button.setEnabled(True)
         self.acknowledge_button.setEnabled(bool(pending))
         if pending:
@@ -880,22 +891,61 @@ class ScadaDialog(QMainWindow):
     @pyqtSlot()
     def _on_connection_lost(self):
         sender = self.sender()
-        if sender is not None and hasattr(sender, 'update_signal') and sender is not self.opcua_client:
+        if self._closing or (sender is not None and hasattr(sender, 'update_signal') and sender is not self.opcua_client):
             return
         self.is_disconnected = True
         for card in self.room_cards.values():
             card.set_disconnect(True)
+        # Keep health indications/reconnection immediate. Only the local
+        # communication alarm waits for one continuous unhealthy interval.
+        if self._connection_fault_since is None:
+            self._connection_fault_since = time.monotonic()
+            record_alarm_event('monitoring_fault_started',
+                               alarm_delay_seconds=self.CONNECTION_ALARM_DELAY_SECONDS)
+            self._connection_alarm_timer.start(math.ceil(self.CONNECTION_ALARM_DELAY_SECONDS * 1000))
+
+    @pyqtSlot()
+    def _confirm_connection_fault(self):
+        if self._closing or self._connection_fault_since is None:
+            return
+        # A healthy snapshot can precede its queued GUI restoration signal.
+        # Recheck it before turning a delayed timer callback into an alarm.
+        snapshot = getattr(self.opcua_client, 'health_snapshot', None)
+        if callable(snapshot):
+            try:
+                health = snapshot()
+            except Exception:
+                logging.exception('[OPC UA] 無法核對通訊警報到期時的健康狀態')
+            else:
+                if health.get('healthy'):
+                    self._on_connection_restored()
+                    self._on_opcua_health(health)
+                    return
+        elapsed = time.monotonic() - self._connection_fault_since
+        remaining = self.CONNECTION_ALARM_DELAY_SECONDS - elapsed
+        if remaining > 0:
+            self._connection_alarm_timer.start(max(1, math.ceil(remaining * 1000)))
+            return
+        self._connection_alarm_timer.stop()
         event = self.alarm_state.update('__connection__', True)
         if event:
             record_alarm_event('alarm_started', room=event.key,
-                               event_id=event.event_id, event_uid=event.event_uid)
+                               event_id=event.event_id, event_uid=event.event_uid,
+                               sustained_seconds=elapsed,
+                               alarm_delay_seconds=self.CONNECTION_ALARM_DELAY_SECONDS)
         self._sync_alarm_presentation([event] if event else [])
 
     @pyqtSlot()
     def _on_connection_restored(self):
         sender = self.sender()
-        if sender is not None and hasattr(sender, 'update_signal') and sender is not self.opcua_client:
+        if self._closing or (sender is not None and hasattr(sender, 'update_signal') and sender is not self.opcua_client):
             return
+        self._connection_alarm_timer.stop()
+        if self._connection_fault_since is not None:
+            record_alarm_event('monitoring_fault_recovered',
+                               duration_seconds=max(0.0, time.monotonic() - self._connection_fault_since),
+                               alarm_confirmed=bool(self.alarm_state.active.get('__connection__')))
+        self._connection_fault_since = None
         self.is_disconnected = False
         for card in self.room_cards.values():
             card.set_disconnect(False)
@@ -911,12 +961,14 @@ class ScadaDialog(QMainWindow):
     @pyqtSlot(dict)
     def _on_opcua_health(self, health):
         sender = self.sender()
-        if sender is not None and hasattr(sender, 'update_signal') and sender is not self.opcua_client:
+        if self._closing or (sender is not None and hasattr(sender, 'update_signal') and sender is not self.opcua_client):
             return
         previous_reason = self.latest_health.get('reason')
         previous_healthy = self.latest_health.get('healthy')
         self.latest_health = dict(health)
         healthy = bool(health.get('healthy'))
+        if healthy and (self.is_disconnected or self._connection_fault_since is not None):
+            self._on_connection_restored()
         bad = len(health.get('bad_tags', []))
         stale = len(health.get('stale_tags', []))
         unknown = len(health.get('unknown_tags', []))
@@ -924,7 +976,9 @@ class ScadaDialog(QMainWindow):
                                   f'監控異常／尚未就緒：{health.get("reason", "unknown")} '
                                   f'（失敗 {bad}、逾時 {stale}、未知 {unknown}）')
         self.health_label.setStyleSheet('' if healthy else 'color: #b45309; font-weight: bold;')
-        self.health_label.setToolTip(self._opcua_timing_tooltip(health.get('timing', {})))
+        self.health_label.setToolTip(
+            f'通訊警報：連續異常 {self.CONNECTION_ALARM_DELAY_SECONDS:g} 秒才提示；健康狀態即時顯示。\n' +
+            self._opcua_timing_tooltip(health.get('timing', {})))
         if previous_reason != health.get('reason') or previous_healthy != healthy:
             record_alarm_event('monitoring_health', healthy=healthy, reason=health.get('reason'),
                                bad_tags=health.get('bad_tags', []), stale_tags=health.get('stale_tags', []),
@@ -1140,6 +1194,7 @@ class ScadaDialog(QMainWindow):
                 event.ignore()
                 return
         
+        self._connection_alarm_timer.stop()
         # 接受關閉事件
         event.accept()
         print("[UI] 視窗已關閉，應用即將退出")
