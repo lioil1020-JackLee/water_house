@@ -6,6 +6,7 @@ import csv
 import logging
 import math
 import time
+from uuid import uuid4
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
     QDialog, QApplication, QSystemTrayIcon, QMenu, QPushButton, QMessageBox
@@ -257,34 +258,9 @@ class RoomCard(QWidget):
         # Keep settings above a pending alarm's topmost owner window.
         popup.setParent(self.parent_dialog, popup.windowFlags())
         if popup.exec() == QDialog.DialogCode.Accepted:
-            self.set_state(popup.selected_state)
             self.clicked.emit()
-            
-            # Write to OPC UA
-            if self.parent_dialog and self.parent_dialog.opcua_client:
-                if self.is_public:
-                    # Map 1F to 2F for public facilities
-                    floor_num = self.floor.lower()[0]  # '1' or '2'
-                    if floor_num == '1':
-                        floor_num = '2'
-                    room_key = f'public_{floor_num}f_{self.room_id}'
-                else:
-                    room_key = self.room_id
-                if popup.selected_state == 'red':
-                    # Enable alarm
-                    if room_key in self.parent_dialog.room_to_tags and 'enable' in self.parent_dialog.room_to_tags[room_key]:
-                        tag_name = self.parent_dialog.room_to_tags[room_key]['enable']
-                        self.parent_dialog.opcua_client.write_value(tag_name, True)
-                else:
-                    # Reset alarm
-                    if room_key in self.parent_dialog.room_to_tags and 'reset' in self.parent_dialog.room_to_tags[room_key]:
-                        tag_name = self.parent_dialog.room_to_tags[room_key]['reset']
-                        self.parent_dialog.opcua_client.write_value(tag_name, True)
-                
-                # Write delay
-                if room_key in self.parent_dialog.room_to_tags and 'delay' in self.parent_dialog.room_to_tags[room_key]:
-                    tag_name = self.parent_dialog.room_to_tags[room_key]['delay']
-                    self.parent_dialog.opcua_client.write_value(tag_name, popup.alarm_delay)
+            # Popup controls already send their own explicit writes. Closing
+            # it must not send another reset True without a matching release.
     
     def set_state(self, state):
         """設置狀態（向後兼容）。"""
@@ -438,6 +414,7 @@ class ScadaDialog(QMainWindow):
     """主視窗 - 完整的房間管理介面。"""
 
     CONNECTION_ALARM_DELAY_SECONDS = 60.0
+    room_reset_status_signal = pyqtSignal(str, str)
     
     def __init__(self, parent=None, *, start_monitoring=True, alarm_state_path=None):
         super().__init__(parent)
@@ -479,6 +456,8 @@ class ScadaDialog(QMainWindow):
         self._closing = False
         self.monitoring_recovery_active = False
         self.latest_health = {}
+        self._room_reset_operations = {}
+        self._room_reset_requests = {}
         self._display_attempts = 0
         self._alarm_display_timer = QTimer(self)
         self._alarm_display_timer.setSingleShot(True)
@@ -551,8 +530,8 @@ class ScadaDialog(QMainWindow):
         self.pending_button.setToolTip('隨時查看本機保存的歷史與未確認警報；不會確認或復歸警報。')
         self.pending_button.clicked.connect(self._show_pending_alarms)
         top_bar_layout.addWidget(self.pending_button)
-        self.acknowledge_button = QPushButton('確認目前警報')
-        self.acknowledge_button.setToolTip('確認這台電腦已收到的警報並停止本次聲音；不會復歸現場壓扣。')
+        self.acknowledge_button = QPushButton('確認所有警報')
+        self.acknowledge_button.setToolTip('確認這台電腦所有待確認警報並停止本次聲音；不會復歸現場壓扣。')
         self.acknowledge_button.setMinimumHeight(42)
         self.acknowledge_button.clicked.connect(self._on_acknowledge_clicked)
         top_bar_layout.addWidget(self.acknowledge_button)
@@ -830,6 +809,113 @@ class ScadaDialog(QMainWindow):
             '靜音目前警報；不會確認紀錄或復歸現場壓扣，新警報會再次響鈴。'
         )
 
+    def begin_room_reset(self, reset_tag):
+        """Capture this room's events before starting its momentary PLC reset."""
+        room = next((key for key, tags in self.room_to_tags.items()
+                     if tags.get('reset') == reset_tag), None)
+        worker = self.opcua_client
+        if (self._closing or room is None or worker is None or
+                not hasattr(worker, 'write_result_signal')):
+            self._room_reset_feedback(reset_tag, '無法復歸：監控連線尚未就緒，本機警報保留。', failure=True)
+            return None
+        if any(op['reset_tag'] == reset_tag for op in self._room_reset_operations.values()):
+            self._room_reset_feedback(reset_tag, '本房復歸正在處理，請稍候。')
+            return None
+        operation_id = str(uuid4())
+        self._room_reset_operations[operation_id] = {
+            'worker': worker, 'room': str(room), 'reset_tag': reset_tag,
+            'event_uids': {event.event_uid for event in self.alarm_state.pending
+                           if event.key == str(room)},
+            'press_id': str(uuid4()), 'release_id': str(uuid4()),
+            'press_result': None, 'release_result': None,
+            'release_started': False, 'failure_reported': False,
+        }
+        record_alarm_event('room_reset_requested', room=str(room), request_id=operation_id,
+                           event_uids=sorted(self._room_reset_operations[operation_id]['event_uids']))
+        self._room_reset_feedback(reset_tag, '正在送出本房復歸指令…')
+        self._send_room_reset_write(operation_id, 'press', True)
+        return operation_id
+
+    def finish_room_reset(self, operation_id):
+        operation = self._room_reset_operations.get(operation_id)
+        if operation is None or operation['release_started']:
+            return
+        operation['release_started'] = True
+        self._send_room_reset_write(operation_id, 'release', False)
+
+    def _send_room_reset_write(self, operation_id, phase, value):
+        operation = self._room_reset_operations[operation_id]
+        request_id = operation[phase + '_id']
+        self._room_reset_requests[request_id] = (operation_id, phase)
+        try:
+            scheduled = operation['worker'].write_value(
+                operation['reset_tag'], value, request_id=request_id)
+        except Exception as exc:
+            self._on_room_reset_write_result(request_id, operation['reset_tag'], False, str(exc))
+        else:
+            # Disconnected writes may emit their result synchronously.
+            if scheduled is False and request_id in self._room_reset_requests:
+                self._on_room_reset_write_result(request_id, operation['reset_tag'], False,
+                                                '無法排程復歸寫入')
+
+    @pyqtSlot(str, str, bool, str)
+    def _on_room_reset_write_result(self, request_id, tag, success, reason):
+        entry = self._room_reset_requests.get(request_id)
+        if entry is None:
+            return
+        operation_id, phase = entry
+        operation = self._room_reset_operations[operation_id]
+        sender = self.sender()
+        if sender is not None and hasattr(sender, 'update_signal') and sender is not operation['worker']:
+            return
+        self._room_reset_requests.pop(request_id)
+        if tag != operation['reset_tag'] or operation['worker'] is not self.opcua_client or self._closing:
+            success, reason = False, '監控連線已變更，復歸結果無法確認'
+        operation[phase + '_result'] = bool(success)
+        if not success:
+            record_alarm_event('room_reset_failed', room=operation['room'], request_id=operation_id,
+                               phase=phase, reason=reason)
+            if not operation['failure_reported']:
+                operation['failure_reported'] = True
+                self._room_reset_feedback(tag, f'本房復歸失敗，本機警報保留：{reason}', failure=True)
+            if phase == 'press' and not operation['release_started']:
+                self.finish_room_reset(operation_id)
+        if operation['press_result'] is None or operation['release_result'] is None:
+            return
+        if operation['press_result'] and operation['release_result']:
+            acknowledged = self.alarm_state.acknowledge(operation['room'], event_uids=operation['event_uids'])
+            for event in acknowledged:
+                record_alarm_event('alarm_acknowledged', room=event.key, event_id=event.event_id,
+                                   event_uid=event.event_uid, source='room_reset')
+            record_alarm_event('room_reset_completed', room=operation['room'], request_id=operation_id,
+                               acknowledged_count=len(acknowledged))
+            self._sync_alarm_presentation()
+            self._room_reset_feedback(tag, '本房復歸指令已送出，已確認本機警報；燈號依現場回報更新。')
+        self._room_reset_operations.pop(operation_id, None)
+
+    def _room_reset_feedback(self, reset_tag, message, *, failure=False):
+        if self._closing:
+            return
+        self.room_reset_status_signal.emit(reset_tag, message)
+        if failure:
+            try:
+                self.tray_icon.showMessage('房間復歸失敗', message,
+                                           QSystemTrayIcon.MessageIcon.Warning, 10000)
+            except Exception:
+                logging.exception('[OPC UA] 無法顯示房間復歸失敗通知')
+
+    def _fail_room_resets_for_worker(self, worker):
+        for operation_id, operation in list(self._room_reset_operations.items()):
+            if operation['worker'] is not worker:
+                continue
+            operation['release_started'] = True
+            for phase in ('press', 'release'):
+                if operation[phase + '_result'] is None:
+                    request_id = operation[phase + '_id']
+                    self._room_reset_requests[request_id] = (operation_id, phase)
+                    self._on_room_reset_write_result(request_id, operation['reset_tag'], False,
+                                                    '監控執行緒已停止，請重新操作復歸')
+
     def _on_acknowledge_clicked(self):
         acknowledged = self.alarm_state.acknowledge()
         for event in acknowledged:
@@ -1031,11 +1117,14 @@ class ScadaDialog(QMainWindow):
             previous_client = self.opcua_client
             self.opcua_client = client
             if previous_client is not None:
+                self._fail_room_resets_for_worker(previous_client)
                 previous_client.deleteLater()
             client.update_signal.connect(self._on_opcua_update)
             client.connection_lost_signal.connect(self._on_connection_lost)
             client.connection_restored_signal.connect(self._on_connection_restored)
             client.health_signal.connect(self._on_opcua_health)
+            if hasattr(client, 'write_result_signal'):
+                client.write_result_signal.connect(self._on_room_reset_write_result)
             client.finished.connect(lambda worker=client: self._on_opcua_finished(worker))
             record_alarm_event('monitoring_worker_started')
             client.start()
@@ -1052,6 +1141,7 @@ class ScadaDialog(QMainWindow):
         if self._closing or worker is not self.opcua_client:
             return
         self.monitoring_recovery_active = True
+        self._fail_room_resets_for_worker(worker)
         record_alarm_event('monitoring_worker_stopped', unexpected=True)
         self.health_label.setText('監控執行緒已停止，5 秒後重新啟動；本機警報紀錄保留')
         self._on_connection_lost()

@@ -13,6 +13,7 @@ def run_self_test(output: Path) -> int:
     from PyQt6.QtCore import QObject, QTimer, pyqtSignal
     from PyQt6.QtGui import QFont, QFontDatabase
     from PyQt6.QtWidgets import QApplication
+    from ui.popup_dialog import PopupDialog
     from ui.scada_dialog import ScadaDialog
 
     output = Path(output).resolve()
@@ -33,10 +34,29 @@ def run_self_test(output: Path) -> int:
 
         class OfflineSource(QObject):
             update_signal = pyqtSignal(dict)
+            write_failed_signal = pyqtSignal(str)
+            write_result_signal = pyqtSignal(str, str, bool, str)
+
+            def __init__(self):
+                super().__init__()
+                self.writes = []
+                self.current_values = {}
+                self.write_timestamps = {}
+
+            def read_value(self, tag):
+                return window.get_latest_value(tag)
+
+            def write_value(self, tag, value, *, request_id=None):
+                self.writes.append((tag, value, request_id))
+                if request_id is not None:
+                    QTimer.singleShot(0, lambda: self.write_result_signal.emit(
+                        request_id, tag, True, ""))
+                return True
 
         source = OfflineSource()
         window.opcua_client = source
         source.update_signal.connect(window._on_opcua_update)
+        source.write_result_signal.connect(window._on_room_reset_write_result)
         result = {
             "version": APP_VERSION,
             "network_access": False,
@@ -54,6 +74,7 @@ def run_self_test(output: Path) -> int:
                 raise TimeoutError("offline history query did not finish")
 
         def finish():
+            reset_popup = None
             try:
                 result["checks"][
                     "history_available_without_alarm"
@@ -152,12 +173,50 @@ def run_self_test(output: Path) -> int:
                     and window.alarm_state.pending[0].cleared_at is not None
                     and "已恢復" in window.pending_label.text()
                 )
+                window._history_dialog.reject()
+                source.update_signal.emit({first: True, second: True})
+                reset_tags = window.room_to_tags[room_a]
+                window.latest_values.update({reset_tags["reset"]: False, reset_tags["delay"]: 0.0})
+                reset_popup = PopupDialog(
+                    initial_state="red", parent_dialog=window,
+                    enable_tag=reset_tags["enable"], reset_tag=reset_tags["reset"],
+                    delay_tag=reset_tags["delay"],
+                )
+                reset_popup.show()
+                app.processEvents()
+                reset_popup.reset_button.click()
+                result["checks"]["single_room_reset_waits_for_server_results"] = (
+                    len(window.alarm_state.pending) == 3
+                    and [(tag, value) for tag, value, _ in source.writes] == [
+                        (reset_tags["reset"], True), (reset_tags["reset"], False)]
+                )
+                app.processEvents()
+                result["checks"]["single_room_reset_preserves_other_pending_alarms"] = (
+                    [event.key for event in window.alarm_state.pending] == ["__connection__", str(room_b)]
+                    and not window.is_muted
+                )
+                result["checks"]["single_room_reset_keeps_alarm_enabled"] = (
+                    reset_popup.alarm_toggle.isChecked()
+                    and window.room_cards[room_a].alarm_enabled
+                    and window.room_cards[room_a].alarm_status
+                )
+                result["checks"]["single_room_reset_shows_result"] = (
+                    "已確認本機警報" in reset_popup.reset_status_label.text()
+                )
+                write_count = len(source.writes)
+                window.acknowledge_button.click()
+                result["checks"]["global_confirmation_still_clears_all_without_plc_write"] = (
+                    not window.alarm_state.pending and len(source.writes) == write_count
+                    and window.acknowledge_button.text() == "確認所有警報"
+                )
                 result["checks"]["opc_not_started"] = window.opcua_client is source
                 result["checks"]["all_tags_mapped"] = len(window.tag_to_room) == 148
                 result["passed"] = all(result["checks"].values())
             except Exception:
                 result["error"] = traceback.format_exc()
             finally:
+                if reset_popup is not None:
+                    reset_popup.reject()
                 window._connection_alarm_timer.stop()
                 if window._history_dialog is not None:
                     window._history_dialog.shutdown(3000)

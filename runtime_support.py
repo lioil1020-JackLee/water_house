@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any
 
-APP_VERSION = "4.2.1"
+APP_VERSION = "4.2.2"
 _fault_stream = None
 
 

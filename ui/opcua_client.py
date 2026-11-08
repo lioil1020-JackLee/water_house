@@ -66,6 +66,7 @@ class OPCUAClient(QThread):
     update_signal = pyqtSignal(dict)
     write_signal = pyqtSignal(str, object)
     write_failed_signal = pyqtSignal(str)
+    write_result_signal = pyqtSignal(str, str, bool, str)
     connection_lost_signal = pyqtSignal()
     connection_restored_signal = pyqtSignal()
     health_signal = pyqtSignal(dict)
@@ -135,6 +136,9 @@ class OPCUAClient(QThread):
         self._notification_count = 0
         self._notification_source_age_ms = None
         self._notification_server_age_ms = None
+        self._pending_write_requests = {}
+        self._write_locks = {}
+        self._write_lock_loop = None
         self.write_signal.connect(self.write_value)
 
     @property
@@ -334,8 +338,13 @@ class OPCUAClient(QThread):
             for entry in self._tag_health.values():
                 entry.update(quality="stale", error=str(reason))
             pending_writes = list(self.current_values)
+            pending_requests = list(self._pending_write_requests.items())
         for tag in pending_writes:
             self._write_failed(tag, "連線中斷，寫入結果無法確認")
+        for request_id, tag in pending_requests:
+            self._complete_write_request(
+                request_id, tag, False, "連線中斷，寫入結果無法確認"
+            )
         self._publish_health()
 
     def _apply_data_value(self, tag, data_value, *, origin, publish_health=True):
@@ -403,8 +412,17 @@ class OPCUAClient(QThread):
                 return None
             return self._cache.get(tag_name)
 
-    def write_value(self, tag_name, value):
+    def write_value(self, tag_name, value, *, request_id=None):
+        """Schedule a write, optionally returning its result by correlation ID.
+
+        Success means that OPC UA accepted the write, not that the PLC's alarm
+        status has cleared. Only fresh server values determine live alarm state.
+        """
         loop = getattr(self, "loop", None)
+        with self._lock:
+            generation = self._session_generation
+            if request_id is not None:
+                self._pending_write_requests[request_id] = tag_name
         if (
             not self.running
             or not self._transport_connected
@@ -412,42 +430,82 @@ class OPCUAClient(QThread):
             or loop is None
             or not loop.is_running()
         ):
-            self._write_failed(tag_name, "OPC UA 未連線或工作執行緒未執行")
-            return
+            self._write_failed(
+                tag_name, "OPC UA 未連線或工作執行緒未執行", request_id=request_id
+            )
+            return False
         with self._lock:
             self.current_values[tag_name] = value
             self.write_timestamps[tag_name] = time.time()
-        coroutine = self._write_async(tag_name, value)
+        coroutine = self._write_async(
+            tag_name, value, request_id=request_id, generation=generation
+        )
         try:
             asyncio.run_coroutine_threadsafe(coroutine, loop)
         except RuntimeError:
             coroutine.close()
-            self._write_failed(tag_name, "OPC UA 寫入排程失敗")
+            self._write_failed(tag_name, "OPC UA 寫入排程失敗", request_id=request_id)
+            return False
+        return True
 
-    def _write_failed(self, tag, reason):
+    def _complete_write_request(self, request_id, tag, success, reason=""):
+        if request_id is None:
+            return
+        with self._lock:
+            pending_tag = self._pending_write_requests.pop(request_id, None)
+        if pending_tag is not None:
+            self.write_result_signal.emit(request_id, tag, success, str(reason))
+
+    def _write_failed(self, tag, reason, *, request_id=None):
         with self._lock:
             self.current_values.pop(tag, None)
             self.write_timestamps.pop(tag, None)
         LOGGER.error("OPC UA write failed: tag=%s reason=%s", tag, reason)
         self.write_failed_signal.emit(tag)
+        self._complete_write_request(request_id, tag, False, reason)
 
-    async def _write_async(self, tag_name, value):
+    async def _write_async(self, tag_name, value, *, request_id=None, generation=None):
         try:
-            if isinstance(value, bool):
-                variant = ua.Variant(value, ua.VariantType.Boolean)
-            elif isinstance(value, float):
-                variant = ua.Variant(value, ua.VariantType.Float)
-            elif isinstance(value, int):
-                variant = ua.Variant(value, ua.VariantType.Int32)
-            else:
-                variant = ua.Variant(value)
-            await asyncio.wait_for(
-                self.nodes[tag_name].write_value(ua.DataValue(variant)),
-                self.request_timeout,
-            )
+            loop = asyncio.get_running_loop()
+            if self._write_lock_loop is not loop:
+                self._write_lock_loop = loop
+                self._write_locks = {}
+            lock = self._write_locks.setdefault(tag_name, asyncio.Lock())
+            if generation is None:
+                generation = self._session_generation
+            # Press/release writes for a tag must reach OPC UA in order, while
+            # unrelated rooms can still write independently.
+            async with lock:
+                self._check_write_session(tag_name, generation)
+                if isinstance(value, bool):
+                    variant = ua.Variant(value, ua.VariantType.Boolean)
+                elif isinstance(value, float):
+                    variant = ua.Variant(value, ua.VariantType.Float)
+                elif isinstance(value, int):
+                    variant = ua.Variant(value, ua.VariantType.Int32)
+                else:
+                    variant = ua.Variant(value)
+                await asyncio.wait_for(
+                    self.nodes[tag_name].write_value(ua.DataValue(variant)),
+                    self.request_timeout,
+                )
+                self._check_write_session(tag_name, generation)
             LOGGER.info("OPC UA write sent: tag=%s value=%r", tag_name, value)
+            self._complete_write_request(request_id, tag_name, True)
+        except asyncio.CancelledError:
+            self._write_failed(tag_name, "OPC UA 寫入已取消", request_id=request_id)
+            raise
         except Exception as exc:
-            self._write_failed(tag_name, exc)
+            self._write_failed(tag_name, exc, request_id=request_id)
+
+    def _check_write_session(self, tag_name, generation):
+        if (
+            not self.running
+            or not self._transport_connected
+            or generation != self._session_generation
+            or tag_name not in self.nodes
+        ):
+            raise ConnectionError("OPC UA 連線已變更，寫入結果無法確認；請重新操作")
 
     async def _read_snapshot(self):
         started = time.perf_counter()

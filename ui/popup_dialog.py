@@ -284,6 +284,13 @@ class PopupDialog(BaseDialog):
         delay_tag=None,
     ):
         super().__init__()
+        self.parent_dialog = parent_dialog
+        self.enable_tag = enable_tag
+        self.reset_tag = reset_tag
+        self.delay_tag = delay_tag
+        self._reset_operation_id = None
+        self._bound_client = getattr(parent_dialog, 'opcua_client', None)
+        self._live_connections = []
         self.setWindowTitle(title)
         if hasattr(sys, '_MEIPASS'):
             meipass = Path(sys._MEIPASS)
@@ -301,7 +308,7 @@ class PopupDialog(BaseDialog):
         self.setModal(True)
         # base sizes for scaling
         self._base_width = 750
-        self._base_height = 520
+        self._base_height = 580
         self._base_alarm_btn = (170, 170)
         self._base_reset_btn = (180, 180)
         self._base_reset_icon = (180, 180)
@@ -498,6 +505,12 @@ class PopupDialog(BaseDialog):
 
         row2.addStretch(1)
         main_layout.addLayout(row2)
+        self.reset_status_label = QLabel('復歸只處理本房間；其他房間警報會保留。')
+        self.reset_status_label.setWordWrap(True)
+        self.reset_status_label.setFont(QFont('微軟正黑體', 10))
+        self.reset_status_label.setMinimumHeight(36)
+        self.reset_status_label.setMaximumHeight(48)
+        main_layout.addWidget(self.reset_status_label)
 
         # attach mouse click to open numpad
         def _open_npad(evt=None):
@@ -546,18 +559,23 @@ class PopupDialog(BaseDialog):
 
         # Start real-time updater if nodes are provided
         self.update_timer = None
-        if parent_dialog and enable_tag and reset_tag and delay_tag:
-            self.parent_dialog = parent_dialog
-            self.enable_tag = enable_tag
-            self.reset_tag = reset_tag
-            self.delay_tag = delay_tag
+        if self._bound_client is not None and enable_tag and reset_tag and delay_tag:
             # Connect to parent's update signal for real-time updates
-            self.parent_dialog.opcua_client.update_signal.connect(self._on_data_updated_from_signal)
-            self.parent_dialog.opcua_client.write_failed_signal.connect(self._on_write_failed)
+            self._bind_live_signal(self._bound_client.update_signal, self._on_data_updated_from_signal)
+            self._bind_live_signal(self._bound_client.write_failed_signal, self._on_write_failed)
+        status_signal = getattr(parent_dialog, 'room_reset_status_signal', None)
+        if status_signal is not None:
+            self._bind_live_signal(status_signal, self._on_room_reset_status)
+
+    def _bind_live_signal(self, signal, slot):
+        signal.connect(slot)
+        self._live_connections.append((signal, slot))
     
     @pyqtSlot(dict)
     def _on_data_updated_from_signal(self, updates):
         """Handle real-time data updates from parent dialog's OPC UA updates."""
+        if not self._is_current_client_signal():
+            return
         # Get latest values from parent dialog
         enable_val = self.parent_dialog.get_latest_value(self.enable_tag)
         reset_val = self.parent_dialog.get_latest_value(self.reset_tag)
@@ -567,41 +585,74 @@ class PopupDialog(BaseDialog):
             self._on_data_updated(bool(enable_val), bool(reset_val), float(delay_val))
 
     def _on_write_failed(self, tag_name):
-        """Handle write failure by clearing current_values to revert UI."""
-        if tag_name in self.parent_dialog.opcua_client.current_values:
-            del self.parent_dialog.opcua_client.current_values[tag_name]
+        """The worker owns its cache; retain visible feedback for this reset."""
+        if not self._is_current_client_signal():
+            return
+        if tag_name == self.reset_tag:
+            self._set_reset_status('本房復歸寫入失敗，警報尚未確認；請檢查通訊後重試。')
         print(f"Write failed for {tag_name}, UI will revert on next read")
 
+    def _is_current_client_signal(self):
+        sender = self.sender()
+        return (self._bound_client is not None
+                and self._bound_client is getattr(self.parent_dialog, 'opcua_client', None)
+                and (sender is None or sender is self._bound_client))
+
     def _on_reset_pressed(self):
-        # reset pressed: write True and update UI
-        self.alarm_toggle.toggled.disconnect(self._on_toggle_alarm)
-        self.alarm_toggle.setChecked(False)
-        self.selected_state = "green"
-        self._update_icons()
-        self.alarm_toggle.toggled.connect(self._on_toggle_alarm)
-        
-        # 立即更新本地緩存和發出信號，UI 立刻反應
-        if hasattr(self, 'parent_dialog') and self.parent_dialog and self.parent_dialog.opcua_client and self.reset_tag:
-            try:
-                print(f"Writing reset True to {self.reset_tag}")
-                self.parent_dialog.opcua_client.current_values[self.reset_tag] = True
-                self.parent_dialog.opcua_client.write_timestamps[self.reset_tag] = __import__('time').time()
-                self.parent_dialog.opcua_client.update_signal.emit({self.reset_tag: True})
-                self.parent_dialog.opcua_client.write_value(self.reset_tag, True)
-            except Exception as e:
-                print(f"Error writing reset True: {e}")
+        if self._reset_operation_id is not None:
+            return
+        begin = getattr(self.parent_dialog, 'begin_room_reset', None)
+        if not callable(begin) or not self.reset_tag:
+            self._set_reset_status('無法復歸本房：未取得可用的復歸連線。')
+            return
+        waiting = '本房復歸處理中，請放開按鈕後等待結果。'
+        self._set_reset_status(waiting)
+        try:
+            self._reset_operation_id = begin(self.reset_tag)
+        except Exception:
+            self._set_reset_status('無法送出本房復歸，請檢查通訊後重試。')
+            return
+        if self._reset_operation_id is None and self.reset_status_label.text() == waiting:
+            self._set_reset_status('本房復歸未送出，請檢查通訊後重試。')
 
     def _on_reset_released(self):
-        # reset released: write False to OPC UA
-        if hasattr(self, 'parent_dialog') and self.parent_dialog and self.parent_dialog.opcua_client and self.reset_tag:
+        operation_id = self._reset_operation_id
+        if operation_id is None:
+            return
+        # Clear before calling into the parent so close/release can never send
+        # the release for this press twice, including reentrant Qt callbacks.
+        self._reset_operation_id = None
+        finish = getattr(self.parent_dialog, 'finish_room_reset', None)
+        try:
+            if not callable(finish):
+                raise RuntimeError('Missing reset release handler')
+            finish(operation_id)
+        except Exception:
+            self._set_reset_status('本房復歸釋放未成功，請檢查通訊與現場狀態。')
+
+    def _set_reset_status(self, message):
+        self.reset_status_label.setText(message)
+        self.reset_status_label.setToolTip(message)
+
+    @pyqtSlot(str, str)
+    def _on_room_reset_status(self, reset_tag, message):
+        if reset_tag == self.reset_tag:
+            self._set_reset_status(message)
+
+    def _cleanup_live_connections(self):
+        self._on_reset_released()
+        if self.update_timer:
+            self.update_timer.stop()
+        for signal, slot in self._live_connections:
             try:
-                print(f"Writing reset False to {self.reset_tag}")
-                self.parent_dialog.opcua_client.current_values[self.reset_tag] = False
-                self.parent_dialog.opcua_client.write_timestamps[self.reset_tag] = __import__('time').time()
-                self.parent_dialog.opcua_client.update_signal.emit({self.reset_tag: False})
-                self.parent_dialog.opcua_client.write_value(self.reset_tag, False)
-            except Exception as e:
-                print(f"Error writing reset False: {e}")
+                signal.disconnect(slot)
+            except (TypeError, RuntimeError):
+                pass
+        self._live_connections.clear()
+
+    def done(self, result):
+        self._cleanup_live_connections()
+        super().done(result)
 
     def _on_ok(self):
         # determine selected state
@@ -726,12 +777,5 @@ class PopupDialog(BaseDialog):
 
     def closeEvent(self, event):
         """Handle dialog close event."""
-        if self.update_timer:
-            self.update_timer.stop()
-        # Disconnect from parent's update signal
-        if hasattr(self, 'parent_dialog') and self.parent_dialog and self.parent_dialog.opcua_client:
-            try:
-                self.parent_dialog.opcua_client.update_signal.disconnect(self._on_data_updated_from_signal)
-            except Exception:
-                pass  # Signal might already be disconnected
+        self._cleanup_live_connections()
         super().closeEvent(event)

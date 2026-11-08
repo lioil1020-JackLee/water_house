@@ -123,12 +123,29 @@ class AlarmState:
             None,
         )
 
-    def acknowledge(self):
-        acknowledged = list(self.pending)
+    def acknowledge(self, key=None, *, event_uids=None):
+        """Confirm all pending events, or only a room's captured occurrences.
+
+        A reset command may complete after another alarm has arrived. Supplying
+        its original UID snapshot prevents that later event from being confirmed
+        by the earlier operation. Live server state is never changed here.
+        """
+        room_key = None if key is None else str(key)
+        selected_uids = None if event_uids is None else set(event_uids)
+        acknowledged = []
+        remaining = []
+        for event in self.pending:
+            if (
+                (room_key is None or event.key == room_key)
+                and (selected_uids is None or event.event_uid in selected_uids)
+            ):
+                acknowledged.append(event)
+            else:
+                remaining.append(event)
         timestamp = self._now()
         for event in acknowledged:
             self._record_history("alarm_acknowledged", event, timestamp)
-        self.pending.clear()
+        self.pending[:] = remaining
         self._save()
         return acknowledged
 

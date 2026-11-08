@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -119,6 +120,7 @@ class OPCUAClientTests(unittest.TestCase):
         self.lost = []
         self.restored = []
         self.write_failed = []
+        self.write_results = []
         self.worker.update_signal.connect(self.updates.append)
         self.worker.health_signal.connect(self.health.append)
         self.worker.connection_lost_signal.connect(lambda: self.lost.append(True))
@@ -126,6 +128,18 @@ class OPCUAClientTests(unittest.TestCase):
             lambda: self.restored.append(True)
         )
         self.worker.write_failed_signal.connect(self.write_failed.append)
+        self.worker.write_result_signal.connect(
+            lambda request_id, tag, success, reason: self.write_results.append(
+                (request_id, tag, success, reason)
+            )
+        )
+
+    async def wait_for_write_results(self, count):
+        async def wait():
+            while len(self.write_results) < count:
+                await asyncio.sleep(0.001)
+
+        await asyncio.wait_for(wait(), timeout=2.0)
 
     def apply(self, tag, value, status=ua.StatusCodes.Good):
         return self.worker._apply_data_value(
@@ -512,6 +526,180 @@ class OPCUAClientTests(unittest.TestCase):
         self.worker.nodes["A"].fail_write = True
         asyncio.run(self.worker._write_async("A", False))
         self.assertEqual(self.write_failed, ["A"])
+
+    def test_correlated_write_without_running_loop_reports_failure(self):
+        self.assertFalse(self.worker.write_value("A", True, request_id="press"))
+        self.assertEqual(len(self.write_results), 1)
+        self.assertEqual(self.write_results[0][:3], ("press", "A", False))
+        self.assertIn("未連線", self.write_results[0][3])
+        self.assertEqual(self.worker._pending_write_requests, {})
+
+    def test_correlated_write_reports_server_acceptance_with_boolean_value(self):
+        async def scenario():
+            self.worker.loop = asyncio.get_running_loop()
+            self.assertTrue(self.worker.write_value("A", True, request_id="press"))
+            await self.wait_for_write_results(1)
+
+        asyncio.run(scenario())
+        self.assertEqual(self.write_results, [("press", "A", True, "")])
+        variant = self.worker.nodes["A"].writes[0].Value
+        self.assertIs(variant.Value, True)
+        self.assertEqual(variant.VariantType, ua.VariantType.Boolean)
+        self.assertEqual(self.worker._pending_write_requests, {})
+
+    def test_correlated_write_reports_server_failure(self):
+        async def scenario():
+            self.worker.loop = asyncio.get_running_loop()
+            self.worker.nodes["A"].fail_write = True
+            self.assertTrue(self.worker.write_value("A", True, request_id="press"))
+            await self.wait_for_write_results(1)
+
+        asyncio.run(scenario())
+        self.assertEqual(self.write_results[0][:3], ("press", "A", False))
+        self.assertIn("synthetic write failure", self.write_results[0][3])
+        self.assertEqual(self.write_failed, ["A"])
+
+    def test_correlated_write_schedule_failure_reports_result_and_closes_coroutine(self):
+        async def scenario():
+            self.worker.loop = asyncio.get_running_loop()
+            with patch(
+                "ui.opcua_client.asyncio.run_coroutine_threadsafe",
+                side_effect=RuntimeError("synthetic stopped loop"),
+            ) as schedule:
+                self.assertFalse(
+                    self.worker.write_value("A", True, request_id="press")
+                )
+            coroutine = schedule.call_args.args[0]
+            self.assertIsNone(coroutine.cr_frame)
+
+        asyncio.run(scenario())
+        self.assertEqual(self.write_results[0][:3], ("press", "A", False))
+        self.assertIn("排程失敗", self.write_results[0][3])
+
+    def test_press_write_finishes_before_release_write_reaches_same_tag(self):
+        seen = []
+
+        async def scenario():
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            self.worker.loop = asyncio.get_running_loop()
+
+            async def write(value):
+                seen.append(value.Value.Value)
+                if value.Value.Value:
+                    entered.set()
+                    await release.wait()
+
+            self.worker.nodes["A"].write_value = write
+            self.worker.write_value("A", True, request_id="press")
+            await asyncio.wait_for(entered.wait(), 2)
+            self.worker.write_value("A", False, request_id="release")
+            await asyncio.sleep(0.01)
+            self.assertEqual(seen, [True])
+            release.set()
+            await self.wait_for_write_results(2)
+
+        asyncio.run(scenario())
+        self.assertEqual(seen, [True, False])
+        self.assertEqual(
+            self.write_results,
+            [("press", "A", True, ""), ("release", "A", True, "")],
+        )
+
+    def test_blocked_room_write_does_not_block_another_room(self):
+        async def scenario():
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            self.worker.loop = asyncio.get_running_loop()
+
+            async def write(value):
+                entered.set()
+                await release.wait()
+
+            self.worker.nodes["A"].write_value = write
+            self.worker.write_value("A", True, request_id="room-a")
+            await asyncio.wait_for(entered.wait(), 2)
+            self.worker.write_value("B", False, request_id="room-b")
+            await self.wait_for_write_results(1)
+            self.assertEqual(self.write_results, [("room-b", "B", True, "")])
+            release.set()
+            await self.wait_for_write_results(2)
+
+        asyncio.run(scenario())
+        self.assertEqual(self.write_results[-1], ("room-a", "A", True, ""))
+
+    def test_reconnect_rejects_queued_writes_and_old_session_success(self):
+        old_writes = []
+        replacement = FakeNode("replacement-A")
+
+        async def scenario():
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            self.worker.loop = asyncio.get_running_loop()
+
+            async def write(value):
+                old_writes.append(value.Value.Value)
+                entered.set()
+                await release.wait()
+
+            self.worker.nodes["A"].write_value = write
+            self.worker.write_value("A", True, request_id="press")
+            await asyncio.wait_for(entered.wait(), 2)
+            self.worker.write_value("A", False, request_id="release")
+            await asyncio.sleep(0.01)
+            self.worker._mark_disconnected("synthetic reconnect")
+            self.worker._transport_connected = True
+            self.worker.nodes["A"] = replacement
+            release.set()
+            await asyncio.sleep(0.01)
+
+        asyncio.run(scenario())
+        self.assertEqual(old_writes, [True])
+        self.assertEqual(replacement.writes, [])
+        self.assertEqual(
+            [result[:3] for result in self.write_results],
+            [("press", "A", False), ("release", "A", False)],
+        )
+        self.assertEqual(self.worker._pending_write_requests, {})
+
+    def test_session_change_during_server_write_cannot_report_success(self):
+        async def scenario():
+            self.worker.loop = asyncio.get_running_loop()
+
+            async def write(value):
+                self.worker._session_generation += 1
+
+            self.worker.nodes["A"].write_value = write
+            self.worker.write_value("A", True, request_id="press")
+            await self.wait_for_write_results(1)
+
+        asyncio.run(scenario())
+        self.assertEqual(self.write_results[0][:3], ("press", "A", False))
+        self.assertIn("連線已變更", self.write_results[0][3])
+
+    def test_cancelled_write_reports_correlated_failure(self):
+        async def scenario():
+            entered = asyncio.Event()
+            self.worker.loop = asyncio.get_running_loop()
+
+            async def write(value):
+                entered.set()
+                await asyncio.Event().wait()
+
+            self.worker.nodes["A"].write_value = write
+            self.worker.write_value("A", True, request_id="press")
+            await asyncio.wait_for(entered.wait(), 2)
+            tasks = [
+                task for task in asyncio.all_tasks()
+                if task.get_coro().__name__ == "_write_async"
+            ]
+            self.assertEqual(len(tasks), 1)
+            tasks[0].cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        asyncio.run(scenario())
+        self.assertEqual(self.write_results[0][:3], ("press", "A", False))
+        self.assertIn("已取消", self.write_results[0][3])
 
     def test_server_alarm_is_never_masked_by_pending_optimistic_write(self):
         self.worker.current_values["A"] = False

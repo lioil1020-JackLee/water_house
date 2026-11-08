@@ -41,6 +41,58 @@ class AlarmStateTests(unittest.TestCase):
         self.assertEqual(len(state.pending), 2)
         self.assertEqual([e.cleared_at for e in state.pending], ['two', None])
 
+    def test_room_acknowledgement_preserves_other_rooms_and_system_events(self):
+        state = AlarmState()
+        first = state.update(201, True, 'first')
+        state.update(201, False, 'clear')
+        recurrence = state.update(201, True, 'again')
+        others = [state.update(key, True) for key in (202, '__connection__', '__storage__')]
+
+        self.assertEqual(state.acknowledge(201), [first, recurrence])
+        self.assertEqual(state.pending, others)
+        self.assertTrue(state.active['201'])
+        self.assertEqual(state.event_uid_for(201), recurrence.event_uid)
+        self.assertIsNone(state.update(201, True))
+
+    def test_snapshot_acknowledgement_does_not_confirm_later_recurrence(self):
+        state = AlarmState()
+        original = state.update(201, True, 'first')
+        captured_uids = {original.event_uid}
+        state.update(201, False, 'clear')
+        recurrence = state.update(201, True, 'again')
+        other = state.update(202, True)
+
+        self.assertEqual(state.acknowledge('201', event_uids=captured_uids), [original])
+        self.assertEqual(state.pending, [recurrence, other])
+        self.assertEqual(state.event_uid_for(201), recurrence.event_uid)
+
+    def test_room_and_uid_filters_must_both_match(self):
+        state = AlarmState()
+        first = state.update('public_2f_1', True)
+        other = state.update(202, True)
+
+        self.assertEqual(state.acknowledge('public_2f_1', event_uids={other.event_uid}), [])
+        self.assertEqual(state.pending, [first, other])
+        self.assertEqual(state.acknowledge('public_2f_1', event_uids={first.event_uid}), [first])
+        self.assertEqual(state.pending, [other])
+
+    def test_empty_uid_snapshot_and_unknown_room_do_not_confirm_any_event(self):
+        state = AlarmState()
+        event = state.update(201, True)
+        self.assertEqual(state.acknowledge(201, event_uids=set()), [])
+        self.assertEqual(state.acknowledge(event_uids=set()), [])
+        self.assertEqual(state.acknowledge('unknown'), [])
+        self.assertEqual(state.pending, [event])
+
+    def test_global_acknowledgement_remains_available_after_room_confirmation(self):
+        state = AlarmState()
+        first = state.update(201, True)
+        remaining = [state.update(key, True) for key in (202, '__connection__')]
+        self.assertEqual(state.acknowledge(201), [first])
+        self.assertEqual(state.acknowledge(), remaining)
+        self.assertEqual(state.pending, [])
+        self.assertTrue(all(state.active.values()))
+
     def test_cleared_event_id_remains_traceable_after_local_acknowledgement(self):
         state = AlarmState()
         event = state.update(201, True)
